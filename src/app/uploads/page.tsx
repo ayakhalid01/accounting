@@ -51,12 +51,14 @@ export default function UploadsPage() {
   const [invoicePreview, setInvoicePreview] = useState<FilePreview | null>(null);
   const [uploadingInvoices, setUploadingInvoices] = useState(false);
   const [deleteInvoicesAfterUpload, setDeleteInvoicesAfterUpload] = useState(false);
+  const [invoiceBatchProgress, setInvoiceBatchProgress] = useState<{ current: number; total: number } | null>(null);
   
   // Credits Upload
   const [creditFile, setCreditFile] = useState<File | null>(null);
   const [creditPreview, setCreditPreview] = useState<FilePreview | null>(null);
   const [uploadingCredits, setUploadingCredits] = useState(false);
   const [deleteCreditsAfterUpload, setDeleteCreditsAfterUpload] = useState(false);
+  const [creditBatchProgress, setCreditBatchProgress] = useState<{ current: number; total: number } | null>(null);
   
   // History
   const [history, setHistory] = useState<UploadHistory[]>([]);
@@ -481,12 +483,19 @@ export default function UploadsPage() {
 
           // Phase 2: Batch insert (2000 at a time)
           const BATCH_SIZE = 2000;
+          const totalBatches = Math.ceil(recordsToInsert.length / BATCH_SIZE);
           console.log(`⚡ Batch inserting ${recordsToInsert.length} records (${BATCH_SIZE} per batch)...`);
           
           for (let i = 0; i < recordsToInsert.length; i += BATCH_SIZE) {
             const batch = recordsToInsert.slice(i, i + BATCH_SIZE);
             const batchNum = Math.floor(i / BATCH_SIZE) + 1;
-            const totalBatches = Math.ceil(recordsToInsert.length / BATCH_SIZE);
+            
+            // Update progress on button
+            if (type === 'invoice') {
+              setInvoiceBatchProgress({ current: batchNum, total: totalBatches });
+            } else {
+              setCreditBatchProgress({ current: batchNum, total: totalBatches });
+            }
             
             console.log(`📦 Batch ${batchNum}/${totalBatches} (${batch.length} records)...`);
             
@@ -504,6 +513,13 @@ export default function UploadsPage() {
               successCount += batch.length;
               console.log(`✅ Batch ${batchNum} done (${successCount}/${recordsToInsert.length})`);
             }
+          }
+          
+          // Clear progress after completion
+          if (type === 'invoice') {
+            setInvoiceBatchProgress(null);
+          } else {
+            setCreditBatchProgress(null);
           }
 
           // Save upload history
@@ -675,7 +691,11 @@ export default function UploadsPage() {
                 {uploadingInvoices ? (
                   <>
                     <div className="h-4 w-4 animate-spin rounded-full border-2 border-white border-r-transparent"></div>
-                    Importing...
+                    {invoiceBatchProgress ? (
+                      `Batch ${invoiceBatchProgress.current}/${invoiceBatchProgress.total}`
+                    ) : (
+                      'Importing...'
+                    )}
                   </>
                 ) : (
                   <>
@@ -742,7 +762,11 @@ export default function UploadsPage() {
                 {uploadingCredits ? (
                   <>
                     <div className="h-4 w-4 animate-spin rounded-full border-2 border-white border-r-transparent"></div>
-                    Importing...
+                    {creditBatchProgress ? (
+                      `Batch ${creditBatchProgress.current}/${creditBatchProgress.total}`
+                    ) : (
+                      'Importing...'
+                    )}
                   </>
                 ) : (
                   <>
