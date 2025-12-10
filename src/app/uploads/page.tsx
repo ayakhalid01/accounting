@@ -347,7 +347,7 @@ export default function UploadsPage() {
         console.log(`📊 Found ${beforeCount} existing ${type}s to delete`);
         
         // Delete in small batches to avoid URL length limit and timeout
-        const DELETE_BATCH_SIZE = 1000;
+        const DELETE_BATCH_SIZE = 2000;
         let totalDeleted = 0;
         
         while (totalDeleted < (beforeCount || 0)) {
