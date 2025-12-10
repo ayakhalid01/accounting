@@ -420,6 +420,7 @@ export default function UploadsPage() {
 
           // Phase 1A: For credits, pre-load all invoices for faster matching (1 query instead of N)
           let invoicesMap = new Map<string, string>(); // composite key → invoice_id
+          let invoicesByRefOnly = new Map<string, any[]>(); // reference → invoices (fallback)
           let matchedCount = 0;
           let skippedCount = 0;
           
@@ -427,12 +428,19 @@ export default function UploadsPage() {
             console.log('📋 Pre-loading invoices for matching...');
             const { data: allInvoices } = await supabase
               .from('invoices')
-              .select('id, invoice_number, payment_method_id');
+              .select('id, invoice_number, payment_method_id, payment_methods(name_en, code)');
             
             if (allInvoices) {
               allInvoices.forEach(inv => {
+                // Primary key: reference + payment_method_id
                 const key = `${inv.invoice_number}|${inv.payment_method_id}`;
                 invoicesMap.set(key, inv.id);
+                
+                // Fallback: group by reference only
+                if (!invoicesByRefOnly.has(inv.invoice_number)) {
+                  invoicesByRefOnly.set(inv.invoice_number, []);
+                }
+                invoicesByRefOnly.get(inv.invoice_number)!.push(inv);
               });
               console.log(`✅ Loaded ${allInvoices.length} invoices for matching`);
             }
@@ -482,9 +490,22 @@ export default function UploadsPage() {
               }
 
               if (type === 'credit') {
-                // Fast O(1) lookup using pre-loaded map
-                const lookupKey = `${groupedRow.reference}|${paymentMethod?.id || null}`;
-                const matchingInvoiceId = invoicesMap.get(lookupKey);
+                // Try 1: Match by reference + payment_method_id
+                let lookupKey = `${groupedRow.reference}|${paymentMethod?.id || null}`;
+                let matchingInvoiceId = invoicesMap.get(lookupKey);
+                
+                // Try 2: Fallback - match by reference + gateway name (case insensitive)
+                if (!matchingInvoiceId && paymentMethod) {
+                  const candidateInvoices = invoicesByRefOnly.get(groupedRow.reference) || [];
+                  const match = candidateInvoices.find(inv => {
+                    const invMethodName = inv.payment_methods?.name_en || inv.payment_methods?.code || '';
+                    return invMethodName.toLowerCase().includes(groupedRow.paymentGateway.toLowerCase()) ||
+                           groupedRow.paymentGateway.toLowerCase().includes(invMethodName.toLowerCase());
+                  });
+                  if (match) {
+                    matchingInvoiceId = match.id;
+                  }
+                }
                 
                 if (matchingInvoiceId) {
                   recordData.original_invoice_id = matchingInvoiceId;
@@ -504,6 +525,18 @@ export default function UploadsPage() {
           // Log summary for credits
           if (type === 'credit') {
             console.log(`✅ Matched: ${matchedCount} credits | ⏭️ Skipped: ${skippedCount} credits (no matching invoice)`);
+            
+            // Debug: Show sample of what we're looking for vs what exists
+            if (matchedCount === 0 && skippedCount > 0) {
+              console.warn('⚠️ No matches found! Debugging info:');
+              const firstCredit = Array.from(groupedData.values())[0];
+              console.log('Sample credit:', { ref: firstCredit.reference, gateway: firstCredit.paymentGateway });
+              const sampleInvoices = Array.from(invoicesByRefOnly.entries()).slice(0, 3);
+              console.log('Sample invoices available:', sampleInvoices.map(([ref, invs]) => ({
+                ref,
+                gateways: invs.map(i => i.payment_methods?.name_en || 'null')
+              })));
+            }
           }
 
           // Phase 2: Batch insert (2000 at a time)
