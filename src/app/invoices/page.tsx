@@ -566,8 +566,7 @@ export default function InvoicesPage() {
                         </span>
                       </td>
                     </tr>
-                  ))
-                )}
+                  ))}
               </tbody>
             </table>
           </div>
