@@ -346,47 +346,44 @@ export default function UploadsPage() {
         
         console.log(`📊 Found ${beforeCount} existing ${type}s to delete`);
         
-        // Delete in small batches to avoid URL length limit and timeout
-        const DELETE_BATCH_SIZE = 2000;
-        let totalDeleted = 0;
+        // Fast delete using SQL (much faster than REST API batches)
+        const startDelete = performance.now();
         
-        while (totalDeleted < (beforeCount || 0)) {
-          // Get batch of IDs to delete
-          const { data: batch } = await supabase
-            .from(table)
-            .select('id')
-            .limit(DELETE_BATCH_SIZE);
+        // Use raw SQL for fast deletion
+        const { error: deleteError } = await supabase.rpc('delete_all_records', {
+          table_name: table
+        });
+        
+        if (deleteError) {
+          // Fallback to batch deletion if RPC not available
+          console.warn('⚠️ RPC not available, using batch deletion...');
           
-          if (!batch || batch.length === 0) {
-            break; // No more records
-          }
+          const DELETE_BATCH_SIZE = 5000;
+          let totalDeleted = 0;
           
-          // Delete using RPC or direct query (to avoid URL length limit, delete in smaller chunks)
-          const chunkSize = 100;
-          for (let i = 0; i < batch.length; i += chunkSize) {
-            const chunk = batch.slice(i, i + chunkSize);
-            const ids = chunk.map(r => r.id);
-            
-            const { error: deleteError } = await supabase
+          while (totalDeleted < (beforeCount || 0)) {
+            const { data: batch } = await supabase
               .from(table)
-              .delete()
-              .in('id', ids);
+              .select('id')
+              .limit(DELETE_BATCH_SIZE);
             
-            if (deleteError) {
-              console.error('❌ Error deleting chunk:', deleteError);
-              setError(`Failed to delete existing ${type}s: ${deleteError.message}`);
-              return;
+            if (!batch || batch.length === 0) break;
+            
+            // Delete in chunks of 500
+            const chunkSize = 500;
+            for (let i = 0; i < batch.length; i += chunkSize) {
+              const chunk = batch.slice(i, i + chunkSize);
+              const ids = chunk.map(r => r.id);
+              
+              await supabase.from(table).delete().in('id', ids);
+              totalDeleted += chunk.length;
+              console.log(`🗑️ Deleted ${totalDeleted}/${beforeCount} ${type}s...`);
             }
-            
-            totalDeleted += chunk.length;
-            console.log(`🗑️ Deleted ${totalDeleted}/${beforeCount} ${type}s...`);
           }
-          
-          // Small delay to avoid rate limits
-          await new Promise(resolve => setTimeout(resolve, 50));
         }
         
-        console.log(`✅ Deleted ${totalDeleted} existing ${type}s`);
+        const deleteTime = ((performance.now() - startDelete) / 1000).toFixed(2);
+        console.log(`✅ Deleted ${beforeCount} existing ${type}s in ${deleteTime}s`);
       }
 
       const reader = new FileReader();
