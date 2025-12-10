@@ -462,16 +462,20 @@ export default function UploadsPage() {
               }
 
               if (type === 'credit') {
+                // Match by Reference AND Payment Gateway
                 const { data: matchingInvoice } = await supabase
                   .from('invoices')
-                  .select('id')
+                  .select('id, invoice_number, payment_method_id')
                   .eq('invoice_number', reference)
+                  .eq('payment_method_id', paymentMethod?.id || null)
                   .maybeSingle();
                 
                 if (matchingInvoice) {
                   recordData.original_invoice_id = matchingInvoice.id;
+                  console.log(`✅ Matched credit ${reference} (${groupedRow.paymentGateway}) → Invoice ${matchingInvoice.id}`);
                 } else {
-                  continue; // Skip if no matching invoice
+                  console.log(`⏭️ Skipped credit ${reference} (${groupedRow.paymentGateway}) - no matching invoice with same payment method`);
+                  continue; // Skip if no matching invoice+gateway
                 }
               }
 
