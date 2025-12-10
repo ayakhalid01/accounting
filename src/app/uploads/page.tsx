@@ -487,6 +487,11 @@ export default function UploadsPage() {
                 if (matchingInvoice) {
                   recordData.original_invoice_id = matchingInvoice.id;
                 } else {
+                  // Debug: Log first 5 mismatches
+                  if (recordsToInsert.length < 5) {
+                    console.log(`❌ No match for credit: ${groupedRow.reference} | Gateway: ${groupedRow.paymentGateway} | Method ID: ${paymentMethod?.id || 'null'}`);
+                    console.log(`   Available invoice keys sample:`, Array.from(invoicesMap.keys()).slice(0, 5));
+                  }
                   continue; // Skip if no matching invoice+gateway
                 }
               }
