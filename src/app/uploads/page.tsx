@@ -456,6 +456,11 @@ export default function UploadsPage() {
           
           if (type === 'credit') {
             console.log('📋 Pre-loading invoices for matching...');
+            const startTime = performance.now();
+            
+            // Fetch invoices in parallel batches for speed
+            const BATCH_SIZE = 5000;
+            const PARALLEL_REQUESTS = 5;
             
             // First get total count
             const { count: totalCount } = await supabase
@@ -464,25 +469,36 @@ export default function UploadsPage() {
             
             console.log(`📊 Total invoices in database: ${totalCount}`);
             
-            // Fetch ALL invoices with pagination (max 1000 per request in Supabase)
             let allInvoices: any[] = [];
-            const pageSize = 1000; // Supabase max
-            const totalPages = Math.ceil((totalCount || 0) / pageSize);
+            const totalBatches = Math.ceil((totalCount || 0) / BATCH_SIZE);
             
-            for (let page = 0; page < totalPages; page++) {
-              const from = page * pageSize;
-              const to = from + pageSize - 1;
+            // Fetch in parallel batches
+            for (let i = 0; i < totalBatches; i += PARALLEL_REQUESTS) {
+              const promises = [];
               
-              const { data: batch } = await supabase
-                .from('invoices')
-                .select('id, invoice_number, payment_method_id, payment_methods(name_en, code)')
-                .range(from, to);
+              for (let j = 0; j < PARALLEL_REQUESTS && (i + j) < totalBatches; j++) {
+                const batchIndex = i + j;
+                const from = batchIndex * BATCH_SIZE;
+                const to = from + BATCH_SIZE - 1;
+                
+                promises.push(
+                  supabase
+                    .from('invoices')
+                    .select('id, invoice_number, payment_method_id, payment_methods(name_en, code)')
+                    .range(from, to)
+                );
+              }
               
-              if (!batch || batch.length === 0) break;
+              const results = await Promise.all(promises);
+              results.forEach(({ data }) => {
+                if (data) allInvoices = allInvoices.concat(data);
+              });
               
-              allInvoices = allInvoices.concat(batch);
               console.log(`📥 Loaded ${allInvoices.length}/${totalCount} invoices...`);
             }
+            
+            const loadTime = ((performance.now() - startTime) / 1000).toFixed(2);
+            console.log(`⚡ Loaded all invoices in ${loadTime}s`);
             
             if (allInvoices.length > 0) {
               allInvoices.forEach(inv => {
