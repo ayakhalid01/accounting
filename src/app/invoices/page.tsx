@@ -211,6 +211,32 @@ export default function InvoicesPage() {
   }, [sortField, sortOrder]);
 
   // ============================================
+  // Calculate Credits Applied to Each Invoice
+  // ============================================
+  const invoicesWithCredits = useMemo(() => {
+    console.log('🔄 [CREDITS] Calculating credits per invoice...');
+    
+    // Build credits index for O(1) lookup
+    const creditsMap = new Map<string, number>();
+    credits.forEach(cr => {
+      if (cr.original_invoice_id) {
+        const current = creditsMap.get(cr.original_invoice_id) || 0;
+        creditsMap.set(cr.original_invoice_id, current + cr.amount_total);
+      }
+    });
+
+    return invoices.map(inv => {
+      const creditsApplied = creditsMap.get(inv.id) || 0;
+      return {
+        ...inv,
+        credits_applied: creditsApplied,
+        net_amount: inv.amount_total - creditsApplied,
+        has_credits: creditsApplied > 0
+      };
+    });
+  }, [invoices, credits]);
+
+  // ============================================
   // Combine and Filter Data (Current Page Only)
   // ============================================
   const combinedData = useMemo(() => {
@@ -219,7 +245,7 @@ export default function InvoicesPage() {
     let data: any[] = [];
 
     if (documentType === 'all' || documentType === 'invoices') {
-      data.push(...invoices.map(inv => ({
+      data.push(...invoicesWithCredits.map(inv => ({
         ...inv,
         type: 'invoice' as const,
         date: inv.sale_order_date,
@@ -236,14 +262,14 @@ export default function InvoicesPage() {
         number: cr.credit_note_number,
         amount: cr.amount_total,
         invoiceNumber: cr.original_invoice_id ? 
-          invoices.find(inv => inv.id === cr.original_invoice_id)?.invoice_number : 
+          invoicesWithCredits.find(inv => inv.id === cr.original_invoice_id)?.invoice_number : 
           null
       })));
     }
 
     console.log('✅ [COMBINE] Combined:', data.length);
     return data;
-  }, [invoices, credits, documentType]);
+  }, [invoicesWithCredits, credits, documentType]);
 
   // ============================================
   // Apply Filters (Client-Side, Current Page Only)
@@ -346,25 +372,44 @@ export default function InvoicesPage() {
       const allInvoices = allInvoicesRes.data || [];
       const allCredits = allCreditsRes.data || [];
 
+      // Build credits map for invoices
+      const creditsMap = new Map<string, number>();
+      allCredits.forEach(cr => {
+        if (cr.original_invoice_id) {
+          const current = creditsMap.get(cr.original_invoice_id) || 0;
+          creditsMap.set(cr.original_invoice_id, current + cr.amount_total);
+        }
+      });
+
       // Combine all data
       const allData = [
-        ...allInvoices.map(inv => ({
-          Type: 'Invoice',
-          Number: inv.invoice_number,
-          Customer: inv.customer_name || '',
-          Date: new Date(inv.sale_order_date).toLocaleDateString(),
-          Amount: inv.amount_total,
-          PaymentMethod: paymentMethods.find(m => m.id === inv.payment_method_id)?.method_name || '',
-          Gateway: inv.gateway_name || ''
-        })),
+        ...allInvoices.map(inv => {
+          const creditsApplied = creditsMap.get(inv.id) || 0;
+          const netAmount = inv.amount_total - creditsApplied;
+          return {
+            Type: 'Invoice',
+            Number: inv.invoice_number,
+            Customer: inv.customer_name || '',
+            Date: new Date(inv.sale_order_date).toLocaleDateString(),
+            'Amount Total': inv.amount_total,
+            'Credits Applied': creditsApplied > 0 ? creditsApplied : 0,
+            'Net Amount': netAmount,
+            'Payment Method': paymentMethods.find(m => m.id === inv.payment_method_id)?.method_name || '',
+            Gateway: inv.gateway_name || '',
+            'Has Credits': creditsApplied > 0 ? 'Yes' : 'No'
+          };
+        }),
         ...allCredits.map(cr => ({
           Type: 'Credit Note',
           Number: cr.credit_note_number,
           Customer: cr.customer_name || '',
           Date: new Date(cr.credit_date).toLocaleDateString(),
-          Amount: cr.amount_total,
-          PaymentMethod: paymentMethods.find(m => m.id === cr.payment_method_id)?.method_name || '',
-          Gateway: cr.gateway_name || ''
+          'Amount Total': cr.amount_total,
+          'Credits Applied': '-',
+          'Net Amount': '-',
+          'Payment Method': paymentMethods.find(m => m.id === cr.payment_method_id)?.method_name || '',
+          Gateway: cr.gateway_name || '',
+          'Has Credits': '-'
         }))
       ];
 
@@ -587,7 +632,9 @@ export default function InvoicesPage() {
                     <th className="px-4 py-3 text-left text-sm font-medium">Number</th>
                     <th className="px-4 py-3 text-left text-sm font-medium">Customer</th>
                     <th className="px-4 py-3 text-left text-sm font-medium">Date</th>
-                    <th className="px-4 py-3 text-right text-sm font-medium">Amount</th>
+                    <th className="px-4 py-3 text-right text-sm font-medium">Amount Total</th>
+                    <th className="px-4 py-3 text-right text-sm font-medium">Credits Applied</th>
+                    <th className="px-4 py-3 text-right text-sm font-medium">Net Amount</th>
                     <th className="px-4 py-3 text-left text-sm font-medium">Payment Method</th>
                   </tr>
                 </thead>
@@ -595,13 +642,20 @@ export default function InvoicesPage() {
                   {filteredData.map((item, index) => (
                     <tr key={`${item.type}-${item.id}-${index}`} className="hover:bg-gray-50">
                       <td className="px-4 py-3">
-                        <span className={`px-2 py-1 rounded text-xs font-medium ${
-                          item.type === 'invoice' 
-                            ? 'bg-blue-100 text-blue-700'
-                            : 'bg-red-100 text-red-700'
-                        }`}>
-                          {item.type === 'invoice' ? 'Invoice' : 'Credit'}
-                        </span>
+                        <div className="flex items-center gap-2">
+                          <span className={`px-2 py-1 rounded text-xs font-medium ${
+                            item.type === 'invoice' 
+                              ? 'bg-blue-100 text-blue-700'
+                              : 'bg-red-100 text-red-700'
+                          }`}>
+                            {item.type === 'invoice' ? 'Invoice' : 'Credit'}
+                          </span>
+                          {item.type === 'invoice' && item.has_credits && (
+                            <span className="inline-flex items-center px-2 py-1 text-xs font-medium rounded-full bg-orange-100 text-orange-800" title="Has credits applied">
+                              🏴 Credits
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="px-4 py-3 font-mono text-sm">{item.number}</td>
                       <td className="px-4 py-3">{item.customer_name || '-'}</td>
@@ -610,6 +664,20 @@ export default function InvoicesPage() {
                       </td>
                       <td className="px-4 py-3 text-right font-medium">
                         EGP {item.amount?.toLocaleString()}
+                      </td>
+                      <td className="px-4 py-3 text-right font-medium text-red-600">
+                        {item.type === 'invoice' && item.credits_applied > 0 ? (
+                          `(${item.credits_applied.toLocaleString()}) EGP`
+                        ) : (
+                          <span className="text-gray-400">-</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-right font-medium text-green-600">
+                        {item.type === 'invoice' ? (
+                          `EGP ${item.net_amount?.toLocaleString()}`
+                        ) : (
+                          <span className="text-gray-400">-</span>
+                        )}
                       </td>
                       <td className="px-4 py-3 text-sm">
                         {paymentMethods.find(m => m.id === item.payment_method_id)?.method_name || '-'}
