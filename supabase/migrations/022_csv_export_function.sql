@@ -16,61 +16,57 @@ SECURITY DEFINER
 STABLE
 AS $$
 DECLARE
-  csv_output TEXT;
+  csv_header TEXT := 'Type,Number,Sale Date,Amount Total,Credits Applied,Net Amount,Payment Method,Has Credits';
+  csv_invoices TEXT;
+  csv_credits TEXT;
 BEGIN
-  -- Build complete CSV in one TEXT field
-  SELECT string_agg(csv_line, E'\n')
-  INTO csv_output
-  FROM (
-    -- CSV Header
-    SELECT 'Type,Number,Sale Date,Amount Total,Credits Applied,Net Amount,Payment Method,Has Credits' as csv_line, 0 as sort_order
-    
-    UNION ALL
-    
-    -- Invoice rows
+  -- Build invoice rows
+  SELECT string_agg(
+    'Invoice,' ||
+    COALESCE(i.invoice_number, '') || ',' ||
+    TO_CHAR(COALESCE(i.sale_order_date::date, i.invoice_date), 'DD/MM/YYYY') || ',' ||
+    COALESCE(i.amount_total::TEXT, '0') || ',' ||
+    COALESCE(credits.total_credits::TEXT, '0') || ',' ||
+    COALESCE((i.amount_total - COALESCE(credits.total_credits, 0))::TEXT, '0') || ',' ||
+    COALESCE(pm.name_en, '') || ',' ||
+    CASE WHEN credits.total_credits > 0 THEN 'Yes' ELSE 'No' END,
+    E'\n' ORDER BY COALESCE(i.sale_order_date, i.invoice_date) DESC
+  )
+  INTO csv_invoices
+  FROM invoices i
+  LEFT JOIN (
     SELECT 
-      'Invoice,' ||
-      COALESCE(i.invoice_number, '') || ',' ||
-      TO_CHAR(COALESCE(i.sale_order_date::date, i.invoice_date), 'DD/MM/YYYY') || ',' ||
-      COALESCE(i.amount_total::TEXT, '0') || ',' ||
-      COALESCE(credits.total_credits::TEXT, '0') || ',' ||
-      COALESCE((i.amount_total - COALESCE(credits.total_credits, 0))::TEXT, '0') || ',' ||
-      COALESCE(pm.name_en, '') || ',' ||
-      CASE WHEN credits.total_credits > 0 THEN 'Yes' ELSE 'No' END as csv_line,
-      1 as sort_order
-    FROM invoices i
-    LEFT JOIN (
-      SELECT 
-        original_invoice_id,
-        SUM(amount_total) as total_credits
-      FROM credit_notes
-      WHERE original_invoice_id IS NOT NULL
-      GROUP BY original_invoice_id
-    ) credits ON credits.original_invoice_id = i.id
-    LEFT JOIN payment_methods pm ON pm.id = i.payment_method_id
-    WHERE i.imported_by = auth.uid()
-    
-    UNION ALL
-    
-    -- Credit note rows
-    SELECT 
-      'Credit Note,' ||
-      COALESCE(c.credit_note_number, '') || ',' ||
-      TO_CHAR(c.credit_date, 'DD/MM/YYYY') || ',' ||
-      COALESCE(c.amount_total::TEXT, '0') || ',' ||
-      '-,' ||
-      '-,' ||
-      COALESCE(pm.name_en, '') || ',' ||
-      '-' as csv_line,
-      2 as sort_order
-    FROM credit_notes c
-    LEFT JOIN payment_methods pm ON pm.id = c.payment_method_id
-    WHERE c.imported_by = auth.uid()
-      AND c.original_invoice_id IS NOT NULL
-  ) all_rows
-  ORDER BY sort_order, csv_line;
+      original_invoice_id,
+      SUM(amount_total) as total_credits
+    FROM credit_notes
+    WHERE original_invoice_id IS NOT NULL
+    GROUP BY original_invoice_id
+  ) credits ON credits.original_invoice_id = i.id
+  LEFT JOIN payment_methods pm ON pm.id = i.payment_method_id
+  WHERE i.imported_by = auth.uid();
   
-  RETURN csv_output;
+  -- Build credit note rows
+  SELECT string_agg(
+    'Credit Note,' ||
+    COALESCE(c.credit_note_number, '') || ',' ||
+    TO_CHAR(c.credit_date, 'DD/MM/YYYY') || ',' ||
+    COALESCE(c.amount_total::TEXT, '0') || ',' ||
+    '-,' ||
+    '-,' ||
+    COALESCE(pm.name_en, '') || ',' ||
+    '-',
+    E'\n' ORDER BY c.credit_date DESC
+  )
+  INTO csv_credits
+  FROM credit_notes c
+  LEFT JOIN payment_methods pm ON pm.id = c.payment_method_id
+  WHERE c.imported_by = auth.uid()
+    AND c.original_invoice_id IS NOT NULL;
+  
+  -- Combine all parts
+  RETURN csv_header || E'\n' || 
+         COALESCE(csv_invoices, '') || 
+         CASE WHEN csv_credits IS NOT NULL THEN E'\n' || csv_credits ELSE '' END;
 END;
 $$;
 
