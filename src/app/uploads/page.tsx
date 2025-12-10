@@ -432,15 +432,20 @@ export default function UploadsPage() {
             
             if (allInvoices) {
               allInvoices.forEach(inv => {
+                // Extract reference from composite invoice_number (e.g., "#3443901|Bank Masr" → "#3443901")
+                const refOnly = inv.invoice_number.includes('|') 
+                  ? inv.invoice_number.split('|')[0] 
+                  : inv.invoice_number;
+                
                 // Primary key: reference + payment_method_id
-                const key = `${inv.invoice_number}|${inv.payment_method_id}`;
+                const key = `${refOnly}|${inv.payment_method_id}`;
                 invoicesMap.set(key, inv.id);
                 
                 // Fallback: group by reference only
-                if (!invoicesByRefOnly.has(inv.invoice_number)) {
-                  invoicesByRefOnly.set(inv.invoice_number, []);
+                if (!invoicesByRefOnly.has(refOnly)) {
+                  invoicesByRefOnly.set(refOnly, []);
                 }
-                invoicesByRefOnly.get(inv.invoice_number)!.push(inv);
+                invoicesByRefOnly.get(refOnly)!.push(inv);
               });
               console.log(`✅ Loaded ${allInvoices.length} invoices for matching`);
             }
@@ -530,10 +535,35 @@ export default function UploadsPage() {
             if (matchedCount === 0 && skippedCount > 0) {
               console.warn('⚠️ No matches found! Debugging info:');
               const firstCredit = Array.from(groupedData.values())[0];
-              console.log('Sample credit:', { ref: firstCredit.reference, gateway: firstCredit.paymentGateway });
-              const sampleInvoices = Array.from(invoicesByRefOnly.entries()).slice(0, 3);
-              console.log('Sample invoices available:', sampleInvoices.map(([ref, invs]) => ({
+              console.log('🔍 Looking for credit:', { 
+                ref: firstCredit.reference, 
+                gateway: firstCredit.paymentGateway 
+              });
+              
+              // Check if this exact reference exists
+              const exactMatch = invoicesByRefOnly.get(firstCredit.reference);
+              if (exactMatch && exactMatch.length > 0) {
+                console.log('✅ Found invoice(s) with same reference:', {
+                  ref: firstCredit.reference,
+                  creditGateway: firstCredit.paymentGateway,
+                  invoices: exactMatch.map(i => ({
+                    id: i.id,
+                    invoice_number: i.invoice_number,
+                    gateway: i.payment_methods?.name_en || i.payment_methods?.code || 'null',
+                    payment_method_id: i.payment_method_id
+                  }))
+                });
+              } else {
+                console.log('❌ No invoice found with reference:', firstCredit.reference);
+                console.log('💡 All references in database start with:', 
+                  Array.from(invoicesByRefOnly.keys()).slice(0, 10)
+                );
+              }
+              
+              const sampleInvoices = Array.from(invoicesByRefOnly.entries()).slice(0, 5);
+              console.log('📋 Sample invoices in database:', sampleInvoices.map(([ref, invs]) => ({
                 ref,
+                count: invs.length,
                 gateways: invs.map(i => i.payment_methods?.name_en || 'null')
               })));
             }
