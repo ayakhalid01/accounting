@@ -170,10 +170,17 @@ export default function InvoicesPage() {
       console.log('📥 Loading ALL invoices (fast parallel loading)...');
       const startTime = performance.now();
       
-      // Step 1: Get total count
-      const { count } = await supabase
+      // Step 1: Get total count (using a simple query to avoid 500 error)
+      const { count, error: countError } = await supabase
         .from('invoices')
-        .select('*', { count: 'exact', head: true });
+        .select('id', { count: 'exact', head: true });
+      
+      if (countError) {
+        console.error('❌ Error getting count:', countError);
+        // Fallback: start loading without knowing total
+        setInvoices([]);
+        return;
+      }
       
       if (!count) {
         setInvoices([]);
@@ -226,10 +233,16 @@ export default function InvoicesPage() {
       console.log('📥 Loading ALL credits (fast parallel loading)...');
       const startTime = performance.now();
       
-      // Step 1: Get total count
-      const { count } = await supabase
+      // Step 1: Get total count (using a simple query to avoid 500 error)
+      const { count, error: countError } = await supabase
         .from('credit_notes')
-        .select('*', { count: 'exact', head: true });
+        .select('id', { count: 'exact', head: true });
+      
+      if (countError) {
+        console.error('❌ Error getting count:', countError);
+        setCredits([]);
+        return;
+      }
       
       if (!count) {
         setCredits([]);
