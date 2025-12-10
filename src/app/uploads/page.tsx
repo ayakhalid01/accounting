@@ -456,11 +456,28 @@ export default function UploadsPage() {
           
           if (type === 'credit') {
             console.log('📋 Pre-loading invoices for matching...');
-            const { data: allInvoices } = await supabase
-              .from('invoices')
-              .select('id, invoice_number, payment_method_id, payment_methods(name_en, code)');
             
-            if (allInvoices) {
+            // Fetch ALL invoices with pagination (Supabase default limit is 1000)
+            let allInvoices: any[] = [];
+            let from = 0;
+            const pageSize = 5000;
+            
+            while (true) {
+              const { data: batch } = await supabase
+                .from('invoices')
+                .select('id, invoice_number, payment_method_id, payment_methods(name_en, code)')
+                .range(from, from + pageSize - 1);
+              
+              if (!batch || batch.length === 0) break;
+              
+              allInvoices = allInvoices.concat(batch);
+              console.log(`📥 Loaded ${allInvoices.length} invoices so far...`);
+              
+              if (batch.length < pageSize) break; // Last page
+              from += pageSize;
+            }
+            
+            if (allInvoices.length > 0) {
               allInvoices.forEach(inv => {
                 // Extract reference from composite invoice_number (e.g., "#3443901|Bank Masr" → "#3443901")
                 const refOnly = inv.invoice_number.includes('|') 
