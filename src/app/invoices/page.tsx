@@ -167,17 +167,38 @@ export default function InvoicesPage() {
 
   const loadInvoices = async () => {
     try {
-      const { data, error } = await supabase
-        .from('invoices')
-        .select(`
-          *,
-          payment_methods(id, name_en, name_ar, code)
-        `)
-        .order('sale_order_date', { ascending: false });
+      console.log('📥 Loading ALL invoices (bypassing 1000 row limit)...');
+      
+      // Load all invoices in batches to bypass PostgREST 1000 row limit
+      let allInvoices: any[] = [];
+      let hasMore = true;
+      let offset = 0;
+      const batchSize = 1000;
+      
+      while (hasMore) {
+        const { data, error } = await supabase
+          .from('invoices')
+          .select(`
+            *,
+            payment_methods(id, name_en, name_ar, code)
+          `)
+          .order('sale_order_date', { ascending: false })
+          .range(offset, offset + batchSize - 1);
 
-      if (error) throw error;
-      setInvoices(data || []);
-      console.log('✅ Loaded invoices:', data?.length);
+        if (error) throw error;
+        
+        if (data && data.length > 0) {
+          allInvoices = allInvoices.concat(data);
+          offset += batchSize;
+          hasMore = data.length === batchSize; // Continue if we got a full batch
+          console.log(`📥 Loaded ${allInvoices.length} invoices so far...`);
+        } else {
+          hasMore = false;
+        }
+      }
+      
+      setInvoices(allInvoices);
+      console.log('✅ Loaded ALL invoices:', allInvoices.length);
     } catch (err: any) {
       console.error('❌ Error loading invoices:', err);
     }
@@ -185,17 +206,38 @@ export default function InvoicesPage() {
 
   const loadCredits = async () => {
     try {
-      const { data, error } = await supabase
-        .from('credit_notes')
-        .select(`
-          *,
-          payment_methods(id, name_en, name_ar, code)
-        `)
-        .order('sale_order_date', { ascending: false });
+      console.log('📥 Loading ALL credits (bypassing 1000 row limit)...');
+      
+      // Load all credits in batches to bypass PostgREST 1000 row limit
+      let allCredits: any[] = [];
+      let hasMore = true;
+      let offset = 0;
+      const batchSize = 1000;
+      
+      while (hasMore) {
+        const { data, error } = await supabase
+          .from('credit_notes')
+          .select(`
+            *,
+            payment_methods(id, name_en, name_ar, code)
+          `)
+          .order('sale_order_date', { ascending: false })
+          .range(offset, offset + batchSize - 1);
 
-      if (error) throw error;
-      setCredits(data || []);
-      console.log('✅ Loaded credits:', data?.length);
+        if (error) throw error;
+        
+        if (data && data.length > 0) {
+          allCredits = allCredits.concat(data);
+          offset += batchSize;
+          hasMore = data.length === batchSize; // Continue if we got a full batch
+          console.log(`📥 Loaded ${allCredits.length} credits so far...`);
+        } else {
+          hasMore = false;
+        }
+      }
+      
+      setCredits(allCredits);
+      console.log('✅ Loaded ALL credits:', allCredits.length);
     } catch (err: any) {
       console.error('❌ Error loading credits:', err);
     }
