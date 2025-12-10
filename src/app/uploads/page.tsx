@@ -524,7 +524,16 @@ export default function UploadsPage() {
           // Phase 1C: For credits, use database function to match all at once
           if (type === 'credit' && creditsToMatch.length > 0) {
             console.log(`🔍 Matching ${creditsToMatch.length} credits using database function...`);
+            console.log(`📊 Audit: Preparing ${creditsToMatch.length} credits for matching`);
             const matchStartTime = performance.now();
+            
+            // Log sample of credits being matched
+            const sampleCredits = creditsToMatch.slice(0, 5);
+            console.log('📋 Sample credits to match:', sampleCredits.map(c => ({
+              ref: c.reference,
+              gateway: c.gateway_name,
+              payment_method_id: c.payment_method_id ? c.payment_method_id.substring(0, 8) + '...' : 'null'
+            })));
             
             // Prepare credits array with UUIDs for the function
             const creditsPayload = creditsToMatch.map((c, idx) => ({
@@ -534,6 +543,8 @@ export default function UploadsPage() {
               gateway_name: c.gateway_name
             }));
             
+            console.log(`🚀 Calling database function with ${creditsPayload.length} credits...`);
+            
             // Call database function to match all credits at once
             const { data: matches, error: matchError } = await supabase.rpc(
               'match_credits_to_invoices',
@@ -541,14 +552,37 @@ export default function UploadsPage() {
             );
             
             const matchTime = ((performance.now() - matchStartTime) / 1000).toFixed(2);
+            console.log(`⏱️ Database function completed in ${matchTime}s`);
             
             if (matchError) {
               console.error('❌ Error matching credits:', matchError);
+              console.error('📋 Error details:', {
+                message: matchError.message,
+                code: matchError.code,
+                details: matchError.details,
+                hint: matchError.hint
+              });
               errors.push(`Credit matching error: ${matchError.message}`);
             } else if (matches && matches.length > 0) {
-              console.log(`⚡ Matched ${matches.length} credits in ${matchTime}s using database function`);
+              console.log(`✅ Database returned ${matches.length} matches`);
+              console.log(`⚡ Matched ${matches.length}/${creditsToMatch.length} credits in ${matchTime}s using database function`);
+              
+              // Count match types
+              const exactMatches = matches.filter((m: any) => m.match_type === 'exact').length;
+              const fallbackMatches = matches.filter((m: any) => m.match_type === 'gateway_fallback').length;
+              console.log(`📊 Match breakdown: ${exactMatches} exact, ${fallbackMatches} gateway fallback`);
+              
+              // Log first 10 matches for audit
+              const sampleMatches = matches.slice(0, 10);
+              console.log('📋 Sample matches:', sampleMatches.map((m: any) => ({
+                type: m.match_type,
+                credit_idx: parseInt(m.credit_id.split('-').pop()),
+                invoice_id: m.invoice_id.substring(0, 8) + '...',
+                invoice_number: m.invoice_number
+              })));
               
               // Apply matches to recordsToInsert
+              let appliedMatches = 0;
               matches.forEach((match: any) => {
                 // Extract temp ID from the UUID we created
                 const tempId = parseInt(match.credit_id.split('-').pop());
@@ -558,24 +592,49 @@ export default function UploadsPage() {
                   const recordIdx = credit.tempId;
                   recordsToInsert[recordIdx].original_invoice_id = match.invoice_id;
                   matchedCount++;
+                  appliedMatches++;
                   
-                  console.log(`✅ ${match.match_type}: ${credit.reference} → ${match.invoice_number}`);
+                  // Log first 5 matches in detail
+                  if (appliedMatches <= 5) {
+                    console.log(`✅ ${match.match_type}: ${credit.reference} (${credit.gateway_name}) → ${match.invoice_number}`);
+                  }
+                } else {
+                  console.warn(`⚠️ Could not find credit for temp ID ${tempId}`);
                 }
               });
               
               skippedCount = creditsToMatch.length - matchedCount;
-              console.log(`📊 Results: ${matchedCount} matched, ${skippedCount} skipped (no invoice found)`);
+              console.log(`📊 Final Results: ${matchedCount} matched, ${skippedCount} skipped (no invoice found)`);
+              console.log(`📈 Match rate: ${((matchedCount / creditsToMatch.length) * 100).toFixed(2)}%`);
+              
+              // Log sample of unmatched credits for debugging
+              if (skippedCount > 0) {
+                const unmatchedCredits = creditsToMatch.filter((c, idx) => {
+                  const tempUuid = `00000000-0000-0000-0000-${String(idx).padStart(12, '0')}`;
+                  return !matches.find((m: any) => m.credit_id === tempUuid);
+                }).slice(0, 5);
+                
+                console.log('⚠️ Sample unmatched credits:', unmatchedCredits.map(c => ({
+                  ref: c.reference,
+                  gateway: c.gateway_name,
+                  payment_method_id: c.payment_method_id ? c.payment_method_id.substring(0, 8) + '...' : 'null'
+                })));
+              }
             } else {
               console.warn('⚠️ No matches found from database function');
+              console.log('📋 Database returned:', matches);
+              console.log('📊 Total credits sent:', creditsPayload.length);
               skippedCount = creditsToMatch.length;
             }
             
             // Remove credits without matches
             if (skippedCount > 0) {
               const originalLength = recordsToInsert.length;
+              console.log(`🗑️ Removing ${skippedCount} unmatched credits from insert batch...`);
               recordsToInsert.splice(0, recordsToInsert.length, 
                 ...recordsToInsert.filter(r => r.original_invoice_id)
               );
+              console.log(`✅ Reduced insert batch from ${originalLength} to ${recordsToInsert.length} records`);
               console.log(`⏭️ Removed ${skippedCount} credits without matching invoices`);
             }
           }
