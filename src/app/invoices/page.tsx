@@ -167,38 +167,55 @@ export default function InvoicesPage() {
 
   const loadInvoices = async () => {
     try {
-      console.log('📥 Loading ALL invoices (bypassing 1000 row limit)...');
+      console.log('📥 Loading ALL invoices (fast parallel loading)...');
+      const startTime = performance.now();
       
-      // Load all invoices in batches to bypass PostgREST 1000 row limit
-      let allInvoices: any[] = [];
-      let hasMore = true;
-      let offset = 0;
-      const batchSize = 1000;
+      // Step 1: Get total count
+      const { count } = await supabase
+        .from('invoices')
+        .select('*', { count: 'exact', head: true });
       
-      while (hasMore) {
-        const { data, error } = await supabase
-          .from('invoices')
-          .select(`
-            *,
-            payment_methods(id, name_en, name_ar, code)
-          `)
-          .order('sale_order_date', { ascending: false })
-          .range(offset, offset + batchSize - 1);
-
-        if (error) throw error;
-        
-        if (data && data.length > 0) {
-          allInvoices = allInvoices.concat(data);
-          offset += batchSize;
-          hasMore = data.length === batchSize; // Continue if we got a full batch
-          console.log(`📥 Loaded ${allInvoices.length} invoices so far...`);
-        } else {
-          hasMore = false;
-        }
+      if (!count) {
+        setInvoices([]);
+        return;
       }
       
+      console.log(`📊 Total invoices: ${count}`);
+      
+      // Step 2: Load in parallel batches (5 at a time for speed)
+      const BATCH_SIZE = 1000;
+      const PARALLEL_REQUESTS = 5;
+      const totalBatches = Math.ceil(count / BATCH_SIZE);
+      let allInvoices: any[] = [];
+      
+      for (let i = 0; i < totalBatches; i += PARALLEL_REQUESTS) {
+        const promises = [];
+        
+        for (let j = 0; j < PARALLEL_REQUESTS && (i + j) < totalBatches; j++) {
+          const offset = (i + j) * BATCH_SIZE;
+          promises.push(
+            supabase
+              .from('invoices')
+              .select(`
+                *,
+                payment_methods(id, name_en, name_ar, code)
+              `)
+              .order('sale_order_date', { ascending: false })
+              .range(offset, offset + BATCH_SIZE - 1)
+          );
+        }
+        
+        const results = await Promise.all(promises);
+        results.forEach(({ data }) => {
+          if (data) allInvoices = allInvoices.concat(data);
+        });
+        
+        console.log(`📥 Loaded ${allInvoices.length}/${count} invoices...`);
+      }
+      
+      const loadTime = ((performance.now() - startTime) / 1000).toFixed(2);
       setInvoices(allInvoices);
-      console.log('✅ Loaded ALL invoices:', allInvoices.length);
+      console.log(`✅ Loaded ALL invoices: ${allInvoices.length} in ${loadTime}s`);
     } catch (err: any) {
       console.error('❌ Error loading invoices:', err);
     }
@@ -206,38 +223,55 @@ export default function InvoicesPage() {
 
   const loadCredits = async () => {
     try {
-      console.log('📥 Loading ALL credits (bypassing 1000 row limit)...');
+      console.log('📥 Loading ALL credits (fast parallel loading)...');
+      const startTime = performance.now();
       
-      // Load all credits in batches to bypass PostgREST 1000 row limit
-      let allCredits: any[] = [];
-      let hasMore = true;
-      let offset = 0;
-      const batchSize = 1000;
+      // Step 1: Get total count
+      const { count } = await supabase
+        .from('credit_notes')
+        .select('*', { count: 'exact', head: true });
       
-      while (hasMore) {
-        const { data, error } = await supabase
-          .from('credit_notes')
-          .select(`
-            *,
-            payment_methods(id, name_en, name_ar, code)
-          `)
-          .order('sale_order_date', { ascending: false })
-          .range(offset, offset + batchSize - 1);
-
-        if (error) throw error;
-        
-        if (data && data.length > 0) {
-          allCredits = allCredits.concat(data);
-          offset += batchSize;
-          hasMore = data.length === batchSize; // Continue if we got a full batch
-          console.log(`📥 Loaded ${allCredits.length} credits so far...`);
-        } else {
-          hasMore = false;
-        }
+      if (!count) {
+        setCredits([]);
+        return;
       }
       
+      console.log(`📊 Total credits: ${count}`);
+      
+      // Step 2: Load in parallel batches (5 at a time for speed)
+      const BATCH_SIZE = 1000;
+      const PARALLEL_REQUESTS = 5;
+      const totalBatches = Math.ceil(count / BATCH_SIZE);
+      let allCredits: any[] = [];
+      
+      for (let i = 0; i < totalBatches; i += PARALLEL_REQUESTS) {
+        const promises = [];
+        
+        for (let j = 0; j < PARALLEL_REQUESTS && (i + j) < totalBatches; j++) {
+          const offset = (i + j) * BATCH_SIZE;
+          promises.push(
+            supabase
+              .from('credit_notes')
+              .select(`
+                *,
+                payment_methods(id, name_en, name_ar, code)
+              `)
+              .order('sale_order_date', { ascending: false })
+              .range(offset, offset + BATCH_SIZE - 1)
+          );
+        }
+        
+        const results = await Promise.all(promises);
+        results.forEach(({ data }) => {
+          if (data) allCredits = allCredits.concat(data);
+        });
+        
+        console.log(`📥 Loaded ${allCredits.length}/${count} credits...`);
+      }
+      
+      const loadTime = ((performance.now() - startTime) / 1000).toFixed(2);
       setCredits(allCredits);
-      console.log('✅ Loaded ALL credits:', allCredits.length);
+      console.log(`✅ Loaded ALL credits: ${allCredits.length} in ${loadTime}s`);
     } catch (err: any) {
       console.error('❌ Error loading credits:', err);
     }
