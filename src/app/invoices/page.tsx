@@ -398,15 +398,15 @@ export default function InvoicesPage() {
   const statsCards = [
     {
       title: 'Total Invoices',
-      value: statistics?.total_invoices_count.toLocaleString() || '0',
-      amount: `EGP ${(statistics?.total_invoices_amount || 0).toLocaleString()}`,
+      value: `EGP ${(statistics?.total_invoices_amount || 0).toLocaleString()}`,
+      amount: statistics?.total_invoices_count.toLocaleString() || '0',
       icon: FileText,
       color: 'text-blue-500'
     },
     {
       title: 'Total Credits',
-      value: statistics?.total_credits_count.toLocaleString() || '0',
-      amount: `EGP ${(statistics?.total_credits_amount || 0).toLocaleString()}`,
+      value: `EGP ${(statistics?.total_credits_amount || 0).toLocaleString()}`,
+      amount: statistics?.total_credits_count.toLocaleString() || '0',
       icon: CreditCard,
       color: 'text-red-500'
     },
