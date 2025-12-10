@@ -24,9 +24,22 @@ SELECT
   (SELECT COUNT(*) FROM credit_notes WHERE imported_by = i.imported_by AND original_invoice_id IS NOT NULL) AS total_credits_count,
   (SELECT COALESCE(SUM(amount_total), 0) FROM credit_notes WHERE imported_by = i.imported_by AND original_invoice_id IS NOT NULL) AS total_credits_amount,
   
-  -- Net amount
-  (SELECT COALESCE(SUM(amount_total), 0) FROM invoices WHERE imported_by = i.imported_by) - 
-  (SELECT COALESCE(SUM(amount_total), 0) FROM credit_notes WHERE imported_by = i.imported_by AND original_invoice_id IS NOT NULL) AS net_amount,
+  -- Net amount (invoices total - only matched credits)
+  (
+    SELECT COALESCE(SUM(
+      inv.amount_total - COALESCE(matched_credits.total_credits, 0)
+    ), 0)
+    FROM invoices inv
+    LEFT JOIN (
+      SELECT 
+        original_invoice_id,
+        SUM(amount_total) as total_credits
+      FROM credit_notes
+      WHERE original_invoice_id IS NOT NULL
+      GROUP BY original_invoice_id
+    ) matched_credits ON matched_credits.original_invoice_id = inv.id
+    WHERE inv.imported_by = i.imported_by
+  ) AS net_amount,
   
   -- Last updated
   NOW() AS last_updated
