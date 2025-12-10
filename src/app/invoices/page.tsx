@@ -167,39 +167,22 @@ export default function InvoicesPage() {
 
   const loadInvoices = async () => {
     try {
-      console.log('📥 Loading ALL invoices (fast parallel loading)...');
+      console.log('📥 Loading ALL invoices (fast parallel loading without count)...');
       const startTime = performance.now();
       
-      // Step 1: Get total count (using a simple query to avoid 500 error)
-      const { count, error: countError } = await supabase
-        .from('invoices')
-        .select('id', { count: 'exact', head: true });
-      
-      if (countError) {
-        console.error('❌ Error getting count:', countError);
-        // Fallback: start loading without knowing total
-        setInvoices([]);
-        return;
-      }
-      
-      if (!count) {
-        setInvoices([]);
-        return;
-      }
-      
-      console.log(`📊 Total invoices: ${count}`);
-      
-      // Step 2: Load in parallel batches (5 at a time for speed)
+      // Load in parallel batches until we get less than BATCH_SIZE (no count query needed)
       const BATCH_SIZE = 1000;
       const PARALLEL_REQUESTS = 5;
-      const totalBatches = Math.ceil(count / BATCH_SIZE);
       let allInvoices: any[] = [];
+      let batchIndex = 0;
+      let hasMore = true;
       
-      for (let i = 0; i < totalBatches; i += PARALLEL_REQUESTS) {
+      while (hasMore) {
         const promises = [];
         
-        for (let j = 0; j < PARALLEL_REQUESTS && (i + j) < totalBatches; j++) {
-          const offset = (i + j) * BATCH_SIZE;
+        // Prepare parallel batch requests
+        for (let j = 0; j < PARALLEL_REQUESTS; j++) {
+          const offset = (batchIndex + j) * BATCH_SIZE;
           promises.push(
             supabase
               .from('invoices')
@@ -213,11 +196,27 @@ export default function InvoicesPage() {
         }
         
         const results = await Promise.all(promises);
+        let batchHasData = false;
+        
         results.forEach(({ data }) => {
-          if (data) allInvoices = allInvoices.concat(data);
+          if (data && data.length > 0) {
+            allInvoices = allInvoices.concat(data);
+            batchHasData = true;
+            
+            // If any batch returned less than BATCH_SIZE, we're near the end
+            if (data.length < BATCH_SIZE) {
+              hasMore = false;
+            }
+          }
         });
         
-        console.log(`📥 Loaded ${allInvoices.length}/${count} invoices...`);
+        // If no batches returned data, we're done
+        if (!batchHasData) {
+          hasMore = false;
+        }
+        
+        batchIndex += PARALLEL_REQUESTS;
+        console.log(`📥 Loaded ${allInvoices.length} invoices...`);
       }
       
       const loadTime = ((performance.now() - startTime) / 1000).toFixed(2);
