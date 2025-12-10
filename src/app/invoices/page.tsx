@@ -10,11 +10,28 @@ import { FileText, CreditCard, Calendar, DollarSign, Filter, Search, Download, C
 
 type DocumentType = 'all' | 'invoices' | 'credits';
 
+// Statistics interface from database view
+interface DashboardStatistics {
+  total_invoices_count: number;
+  total_invoices_amount: number;
+  total_credits_count: number;
+  total_credits_amount: number;
+  net_amount: number;
+  last_updated: string;
+}
+
 export default function InvoicesPage() {
   const router = useRouter();
+  
+  // ============================================
+  // State - Only Current Page Data
+  // ============================================
   const [loading, setLoading] = useState(true);
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [credits, setCredits] = useState<CreditNote[]>([]);
+  
+  // Statistics from database view (ALL data, instant)
+  const [statistics, setStatistics] = useState<DashboardStatistics | null>(null);
   
   // Filters
   const [documentType, setDocumentType] = useState<DocumentType>('all');
@@ -31,8 +48,107 @@ export default function InvoicesPage() {
   
   // Pagination
   const [currentPage, setCurrentPage] = useState(1);
-  const [itemsPerPage] = useState(100); // Show 100 items per page
+  const [itemsPerPage] = useState(1000); // Load 1000 per page
 
+  // ============================================
+  // Load Statistics from Database View (Instant!)
+  // ============================================
+  const loadStatistics = async () => {
+    try {
+      console.log('📊 [STATS] Loading from database view...');
+      const { data, error } = await supabase.rpc('get_dashboard_statistics');
+      
+      if (error) {
+        console.error('❌ [STATS] Error:', error);
+        return;
+      }
+      
+      if (data && data.length > 0) {
+        setStatistics(data[0]);
+        console.log('✅ [STATS] Loaded:', {
+          invoices: data[0].total_invoices_count,
+          credits: data[0].total_credits_count,
+          net: data[0].net_amount
+        });
+      }
+    } catch (error) {
+      console.error('❌ [STATS] Exception:', error);
+    }
+  };
+
+  // ============================================
+  // Load One Page of Invoices (Lazy Loading)
+  // ============================================
+  const loadInvoices = async (page: number = currentPage) => {
+    try {
+      console.log(`📥 [INVOICES] Loading page ${page}...`);
+      
+      const offset = (page - 1) * itemsPerPage;
+      
+      const { data, error } = await supabase
+        .from('invoices')
+        .select('*')
+        .order('sale_order_date', { ascending: sortOrder === 'asc' })
+        .range(offset, offset + itemsPerPage - 1);
+
+      if (error) throw error;
+      
+      console.log(`✅ [INVOICES] Loaded ${data?.length || 0} for page ${page}`);
+      setInvoices(data || []);
+      
+    } catch (error) {
+      console.error('❌ [INVOICES] Error:', error);
+      setInvoices([]);
+    }
+  };
+
+  // ============================================
+  // Load One Page of Credits (Lazy Loading)
+  // ============================================
+  const loadCredits = async (page: number = currentPage) => {
+    try {
+      console.log(`📥 [CREDITS] Loading page ${page}...`);
+      
+      const offset = (page - 1) * itemsPerPage;
+      
+      const { data, error } = await supabase
+        .from('credit_notes')
+        .select('*')
+        .not('original_invoice_id', 'is', null)
+        .order('credit_date', { ascending: sortOrder === 'asc' })
+        .range(offset, offset + itemsPerPage - 1);
+
+      if (error) throw error;
+      
+      console.log(`✅ [CREDITS] Loaded ${data?.length || 0} for page ${page}`);
+      setCredits(data || []);
+      
+    } catch (error) {
+      console.error('❌ [CREDITS] Error:', error);
+      setCredits([]);
+    }
+  };
+
+  // ============================================
+  // Load Payment Methods
+  // ============================================
+  const loadPaymentMethods = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('payment_methods_config')
+        .select('*')
+        .order('method_name');
+
+      if (error) throw error;
+      setPaymentMethods(data || []);
+    } catch (error) {
+      console.error('❌ [PAYMENT_METHODS] Error:', error);
+    }
+  };
+
+  // ============================================
+  // Initial Load - Statistics + First Page
+  // ============================================
   useEffect(() => {
     const init = async () => {
       console.log('📄 [INVOICES] Checking authentication...');
@@ -44,412 +160,259 @@ export default function InvoicesPage() {
         return;
       }
       
+      setLoading(true);
+      
+      // Load statistics and first page in parallel
       await Promise.all([
-        loadInvoices(),
-        loadCredits(),
+        loadStatistics(),
+        loadInvoices(1),
+        loadCredits(1),
         loadPaymentMethods()
       ]);
       
       setLoading(false);
+      console.log('✅ [INVOICES] Initial load complete');
     };
 
     init();
-  }, [router]);
+  }, []);
 
-  // Cache: Pre-calculate credits per invoice (only recalculate when data changes)
-  const invoicesWithCredits = useMemo(() => {
-    console.log('🔄 Recalculating credits mapping...');
-    
-    // Build credits index for O(1) lookup
-    const creditsMap = new Map<string, number>();
-    credits.forEach(cr => {
-      if (cr.original_invoice_id) {
-        const current = creditsMap.get(cr.original_invoice_id) || 0;
-        creditsMap.set(cr.original_invoice_id, current + cr.amount_total);
-      }
-    });
-
-    return invoices.map(inv => {
-      const totalCredits = creditsMap.get(inv.id) || 0;
-      return {
-        ...inv,
-        type: 'invoice' as const,
-        credits_applied: totalCredits,
-        net_amount: inv.amount_total - totalCredits,
-        has_credits: totalCredits > 0
-      };
-    });
-  }, [invoices, credits]);
-
-  // Cache: Filtered and sorted data
-  const filteredData = useMemo(() => {
-    console.log('🔍 Applying filters...');
-    let data: any[] = [];
-
-    // Filter by document type
-    if (documentType === 'all') {
-      data = [
-        ...invoicesWithCredits,
-        ...credits.map(cr => ({ ...cr, type: 'credit', has_credits: false }))
-      ];
-    } else if (documentType === 'invoices') {
-      data = [...invoicesWithCredits];
-    } else {
-      data = credits.map(cr => ({ ...cr, type: 'credit', has_credits: false }));
-    }
-
-    // Search filter
-    if (searchTerm) {
-      const search = searchTerm.toLowerCase();
-      data = data.filter(item => {
-        const number = item.type === 'invoice' ? item.invoice_number : item.credit_note_number;
-        const partner = item.partner_name?.toLowerCase() || '';
-        return number?.toLowerCase().includes(search) || partner.includes(search);
+  // ============================================
+  // Load New Page When Page Changes
+  // ============================================
+  useEffect(() => {
+    if (currentPage > 1) {
+      setLoading(true);
+      Promise.all([
+        loadInvoices(currentPage),
+        loadCredits(currentPage)
+      ]).then(() => {
+        setLoading(false);
+        console.log(`✅ [PAGE] Loaded page ${currentPage}`);
       });
     }
+  }, [currentPage]);
 
-    // Date range filter
+  // ============================================
+  // Reload When Sort Changes
+  // ============================================
+  useEffect(() => {
+    if (!loading && (invoices.length > 0 || credits.length > 0)) {
+      setCurrentPage(1);
+      setLoading(true);
+      Promise.all([
+        loadInvoices(1),
+        loadCredits(1)
+      ]).then(() => {
+        setLoading(false);
+        console.log('✅ [SORT] Reloaded with new sort');
+      });
+    }
+  }, [sortField, sortOrder]);
+
+  // ============================================
+  // Combine and Filter Data (Current Page Only)
+  // ============================================
+  const combinedData = useMemo(() => {
+    console.log('🔄 [COMBINE] Combining invoices and credits...');
+    
+    let data: any[] = [];
+
+    if (documentType === 'all' || documentType === 'invoices') {
+      data.push(...invoices.map(inv => ({
+        ...inv,
+        type: 'invoice' as const,
+        date: inv.sale_order_date,
+        number: inv.invoice_number,
+        amount: inv.amount_total
+      })));
+    }
+
+    if (documentType === 'all' || documentType === 'credits') {
+      data.push(...credits.map(cr => ({
+        ...cr,
+        type: 'credit' as const,
+        date: cr.credit_date,
+        number: cr.credit_note_number,
+        amount: cr.amount_total,
+        invoiceNumber: cr.original_invoice_id ? 
+          invoices.find(inv => inv.id === cr.original_invoice_id)?.invoice_number : 
+          null
+      })));
+    }
+
+    console.log('✅ [COMBINE] Combined:', data.length);
+    return data;
+  }, [invoices, credits, documentType]);
+
+  // ============================================
+  // Apply Filters (Client-Side, Current Page Only)
+  // ============================================
+  const filteredData = useMemo(() => {
+    console.log('🔍 [FILTER] Applying filters...');
+    
+    let filtered = combinedData;
+
+    // Search term
+    if (searchTerm) {
+      const search = searchTerm.toLowerCase();
+      filtered = filtered.filter(item => 
+        item.number?.toLowerCase().includes(search) ||
+        item.customer_name?.toLowerCase().includes(search) ||
+        item.invoiceNumber?.toLowerCase().includes(search)
+      );
+    }
+
+    // Date range
     if (startDate) {
-      const start = new Date(startDate).getTime();
-      data = data.filter(item => new Date(item.sale_order_date).getTime() >= start);
+      filtered = filtered.filter(item => new Date(item.date) >= new Date(startDate));
     }
     if (endDate) {
-      const end = new Date(endDate).getTime();
-      data = data.filter(item => new Date(item.sale_order_date).getTime() <= end);
+      filtered = filtered.filter(item => new Date(item.date) <= new Date(endDate));
     }
 
-    // Payment method filter
+    // Payment method
     if (selectedPaymentMethod !== 'all') {
-      data = data.filter(item => item.payment_method_id === selectedPaymentMethod);
+      filtered = filtered.filter(item => 
+        item.payment_method_id?.toString() === selectedPaymentMethod
+      );
     }
 
-    // Credits filter (only for invoices)
-    if (hasCreditsFilter !== 'all' && documentType !== 'credits') {
-      if (hasCreditsFilter === 'with_credits') {
-        data = data.filter(item => item.type === 'invoice' && item.has_credits === true);
-      } else if (hasCreditsFilter === 'no_credits') {
-        data = data.filter(item => item.type === 'credit' || (item.type === 'invoice' && item.has_credits === false));
-      }
+    // Credits filter
+    if (hasCreditsFilter === 'with_credits' && documentType !== 'credits') {
+      const invoicesWithCredits = new Set(
+        credits.map(cr => cr.original_invoice_id).filter(Boolean)
+      );
+      filtered = filtered.filter(item => 
+        item.type === 'invoice' && invoicesWithCredits.has(item.id)
+      );
+    } else if (hasCreditsFilter === 'no_credits' && documentType !== 'credits') {
+      const invoicesWithCredits = new Set(
+        credits.map(cr => cr.original_invoice_id).filter(Boolean)
+      );
+      filtered = filtered.filter(item => 
+        item.type === 'invoice' && !invoicesWithCredits.has(item.id)
+      );
     }
 
-    // Sort
-    data.sort((a, b) => {
-      let aVal, bVal;
-      
-      if (sortField === 'sale_order_date') {
-        aVal = new Date(a.sale_order_date).getTime();
-        bVal = new Date(b.sale_order_date).getTime();
-      } else {
-        aVal = a.amount_total;
-        bVal = b.amount_total;
-      }
+    console.log('✅ [FILTER] Filtered:', filtered.length);
+    return filtered;
+  }, [combinedData, searchTerm, startDate, endDate, selectedPaymentMethod, hasCreditsFilter, credits]);
 
-      return sortOrder === 'asc' ? aVal - bVal : bVal - aVal;
-    });
-
-    console.log('✅ Filtered data:', data.length, 'items');
-    return data;
-  }, [invoicesWithCredits, credits, documentType, searchTerm, startDate, endDate, selectedPaymentMethod, hasCreditsFilter, sortField, sortOrder]);
-
-  // Paginated data
-  const paginatedData = useMemo(() => {
-    const startIndex = (currentPage - 1) * itemsPerPage;
-    const endIndex = startIndex + itemsPerPage;
-    return filteredData.slice(startIndex, endIndex);
-  }, [filteredData, currentPage, itemsPerPage]);
-  
-  const totalPages = Math.ceil(filteredData.length / itemsPerPage);
-  
-  // Reset to page 1 when filters change
-  useEffect(() => {
-    setCurrentPage(1);
-  }, [documentType, searchTerm, startDate, endDate, selectedPaymentMethod, hasCreditsFilter]);
-
-  const loadInvoices = async () => {
-    try {
-      console.log('📥 Loading ALL invoices (fast parallel loading without count)...');
-      const startTime = performance.now();
-      
-      // Load in parallel batches until we get less than BATCH_SIZE (no count query needed)
-      const BATCH_SIZE = 1000;
-      const PARALLEL_REQUESTS = 5;
-      let allInvoices: any[] = [];
-      let batchIndex = 0;
-      let hasMore = true;
-      
-      while (hasMore) {
-        const promises = [];
-        
-        // Prepare parallel batch requests
-        for (let j = 0; j < PARALLEL_REQUESTS; j++) {
-          const offset = (batchIndex + j) * BATCH_SIZE;
-          promises.push(
-            supabase
-              .from('invoices')
-              .select(`
-                *,
-                payment_methods(id, name_en, name_ar, code)
-              `)
-              .order('sale_order_date', { ascending: false })
-              .range(offset, offset + BATCH_SIZE - 1)
-          );
-        }
-        
-        const results = await Promise.all(promises);
-        let batchHasData = false;
-        
-        results.forEach(({ data }) => {
-          if (data && data.length > 0) {
-            allInvoices = allInvoices.concat(data);
-            batchHasData = true;
-            
-            // If any batch returned less than BATCH_SIZE, we're near the end
-            if (data.length < BATCH_SIZE) {
-              hasMore = false;
-            }
-          }
-        });
-        
-        // If no batches returned data, we're done
-        if (!batchHasData) {
-          hasMore = false;
-        }
-        
-        batchIndex += PARALLEL_REQUESTS;
-        console.log(`📥 Loaded ${allInvoices.length} invoices...`);
-      }
-      
-      const loadTime = ((performance.now() - startTime) / 1000).toFixed(2);
-      setInvoices(allInvoices);
-      console.log(`✅ Loaded ALL invoices: ${allInvoices.length} in ${loadTime}s`);
-    } catch (err: any) {
-      console.error('❌ Error loading invoices:', err);
-    }
-  };
-
-  const loadCredits = async () => {
-    try {
-      console.log('📥 Loading ALL credits (fast parallel loading)...');
-      const startTime = performance.now();
-      
-      // Step 1: Get total count (using a simple query to avoid 500 error)
-      const { count, error: countError } = await supabase
-        .from('credit_notes')
-        .select('id', { count: 'exact', head: true });
-      
-      if (countError) {
-        console.error('❌ Error getting count:', countError);
-        setCredits([]);
-        return;
-      }
-      
-      if (!count) {
-        setCredits([]);
-        return;
-      }
-      
-      console.log(`📊 Total credits: ${count}`);
-      
-      // Step 2: Load in parallel batches (5 at a time for speed)
-      const BATCH_SIZE = 1000;
-      const PARALLEL_REQUESTS = 5;
-      const totalBatches = Math.ceil(count / BATCH_SIZE);
-      let allCredits: any[] = [];
-      
-      for (let i = 0; i < totalBatches; i += PARALLEL_REQUESTS) {
-        const promises = [];
-        
-        for (let j = 0; j < PARALLEL_REQUESTS && (i + j) < totalBatches; j++) {
-          const offset = (i + j) * BATCH_SIZE;
-          promises.push(
-            supabase
-              .from('credit_notes')
-              .select(`
-                *,
-                payment_methods(id, name_en, name_ar, code)
-              `)
-              .order('sale_order_date', { ascending: false })
-              .range(offset, offset + BATCH_SIZE - 1)
-          );
-        }
-        
-        const results = await Promise.all(promises);
-        results.forEach(({ data }) => {
-          if (data) allCredits = allCredits.concat(data);
-        });
-        
-        console.log(`📥 Loaded ${allCredits.length}/${count} credits...`);
-      }
-      
-      const loadTime = ((performance.now() - startTime) / 1000).toFixed(2);
-      setCredits(allCredits);
-      console.log(`✅ Loaded ALL credits: ${allCredits.length} in ${loadTime}s`);
-    } catch (err: any) {
-      console.error('❌ Error loading credits:', err);
-    }
-  };
-
-  const loadPaymentMethods = async () => {
-    try {
-      const { data, error } = await supabase
-        .from('payment_methods')
-        .select('*')
-        .eq('is_active', true)
-        .order('name_en');
-
-      if (error) throw error;
-      setPaymentMethods(data || []);
-    } catch (err: any) {
-      console.error('❌ Error loading payment methods:', err);
-    }
-  };
-
-  const toggleSort = (field: 'sale_order_date' | 'amount_total') => {
-    if (sortField === field) {
-      setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
-    } else {
-      setSortField(field);
-      setSortOrder('desc');
-    }
-  };
-
-  const exportToCSV = () => {
-    // Match the exact table shown in UI
-    const headers = [
-      'Type',
-      'Number',
-      'Partner',
-      'Sale Order Date',
-      'Payment Method',
-      'Amount Total',
-      'Credits Applied',
-      'Net Amount',
-      'Status'
-    ];
+  // ============================================
+  // Calculate Total Pages from Statistics
+  // ============================================
+  const totalPages = useMemo(() => {
+    if (!statistics) return 1;
     
-    // Use the same filtered data shown in the table
-    const dataToExport = filteredData;
+    const totalItems = documentType === 'invoices' ? statistics.total_invoices_count :
+                      documentType === 'credits' ? statistics.total_credits_count :
+                      statistics.total_invoices_count + statistics.total_credits_count;
     
-    const rows = dataToExport.map(item => {
-      const isInvoice = item.type === 'invoice';
-      const creditsApplied = isInvoice && item.credits_applied ? item.credits_applied : 0;
-      const netAmount = isInvoice && item.net_amount ? item.net_amount : item.amount_total;
-      
-      return [
-        isInvoice ? 'Invoice' : 'Credit',
-        isInvoice ? item.invoice_number : item.credit_note_number,
-        item.partner_name || 'Imported Customer',
-        new Date(item.sale_order_date).toLocaleDateString('en-GB'),
-        item.payment_methods?.name_en || '-',
-        `${item.amount_total.toFixed(2)} EGP`,
-        isInvoice ? (creditsApplied > 0 ? `(${creditsApplied.toFixed(2)}) EGP` : '-') : '-',
-        `${netAmount.toFixed(2)} EGP`,
-        item.state === 'posted' ? 'Posted' : item.state
-      ];
-    });
+    return Math.ceil(totalItems / itemsPerPage);
+  }, [statistics, documentType, itemsPerPage]);
 
-    const csv = [headers, ...rows].map(row => row.join(',')).join('\n');
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    const fileName = documentType === 'credits' ? 'Credits' : documentType === 'invoices' ? 'Invoices' : 'Documents';
-    a.download = `${fileName}_exported_${new Date().toISOString().split('T')[0]}.csv`;
-    a.click();
+  // ============================================
+  // Refresh Statistics (Manual Refresh Button)
+  // ============================================
+  const refreshStatistics = async () => {
+    try {
+      console.log('🔄 [STATS] Refreshing...');
+      await supabase.rpc('refresh_dashboard_statistics');
+      await loadStatistics();
+      console.log('✅ [STATS] Refreshed!');
+    } catch (error) {
+      console.error('❌ [STATS] Refresh error:', error);
+    }
   };
 
-  const totalInvoices = filteredData.filter(d => d.type === 'invoice').reduce((sum, i) => sum + i.amount_total, 0);
-  // Only count credits that are linked to invoices (have original_invoice_id)
-  const totalCredits = filteredData.filter(d => d.type === 'credit' && d.original_invoice_id).reduce((sum, c) => sum + c.amount_total, 0);
-  const netAmount = totalInvoices - totalCredits;
+  // ============================================
+  // Statistics Cards (From Database View)
+  // ============================================
+  const statsCards = [
+    {
+      title: 'Total Invoices',
+      value: statistics?.total_invoices_count.toLocaleString() || '0',
+      amount: `EGP ${(statistics?.total_invoices_amount || 0).toLocaleString()}`,
+      icon: FileText,
+      color: 'text-blue-500'
+    },
+    {
+      title: 'Total Credits',
+      value: statistics?.total_credits_count.toLocaleString() || '0',
+      amount: `EGP ${(statistics?.total_credits_amount || 0).toLocaleString()}`,
+      icon: CreditCard,
+      color: 'text-red-500'
+    },
+    {
+      title: 'Net Amount',
+      value: `EGP ${(statistics?.net_amount || 0).toLocaleString()}`,
+      amount: `${((statistics?.total_credits_count || 0) / (statistics?.total_invoices_count || 1) * 100).toFixed(1)}% credit rate`,
+      icon: DollarSign,
+      color: 'text-green-500'
+    }
+  ];
 
-  if (loading) {
-    return (
-      <div>
-        <Navigation />
-        <div className="flex items-center justify-center min-h-screen">
-          <div className="text-center">
-            <div className="inline-block h-12 w-12 animate-spin rounded-full border-4 border-solid border-primary-500 border-r-transparent"></div>
-            <p className="mt-4 text-gray-600">Loading...</p>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
+  // ============================================
+  // Render
+  // ============================================
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 dark:from-slate-950 dark:to-slate-900">
       <Navigation />
       
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <div className="mb-8">
-          <h1 className="text-3xl font-bold text-gray-900">Invoices & Credit Notes</h1>
-          <p className="text-gray-600 mt-2">View and manage all imported documents</p>
+      <div className="container mx-auto px-4 py-8">
+        {/* Header */}
+        <div className="mb-6">
+          <h1 className="text-3xl font-bold mb-2">Invoices & Credit Notes</h1>
+          <p className="text-slate-600 dark:text-slate-400">
+            View and manage your documents
+            {statistics && (
+              <span className="ml-2 text-xs">
+                (Updated: {new Date(statistics.last_updated).toLocaleTimeString()})
+              </span>
+            )}
+          </p>
         </div>
 
-        {/* Summary Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
-          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-gray-600">Total Invoices</p>
-                <p className="text-2xl font-bold text-green-600">
-                  {totalInvoices.toLocaleString()} EGP
-                </p>
-                <p className="text-xs text-gray-500 mt-1">
-                  {filteredData.filter(d => d.type === 'invoice').length} documents
-                </p>
+        {/* Statistics Cards */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+          {statsCards.map((stat, index) => (
+            <div key={index} className="bg-white dark:bg-slate-800 rounded-lg p-6 shadow-sm border border-slate-200 dark:border-slate-700">
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <p className="text-sm text-slate-600 dark:text-slate-400 mb-1">{stat.title}</p>
+                  <p className="text-2xl font-bold">{stat.value}</p>
+                </div>
+                <stat.icon className={`w-8 h-8 ${stat.color}`} />
               </div>
-              <FileText className="h-12 w-12 text-green-600 opacity-20" />
+              <p className="text-sm text-slate-500">{stat.amount}</p>
             </div>
-          </div>
+          ))}
+        </div>
 
-          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-gray-600">Total Credits</p>
-                <p className="text-2xl font-bold text-red-600">
-                  {totalCredits.toLocaleString()} EGP
-                </p>
-                <p className="text-xs text-gray-500 mt-1">
-                  {filteredData.filter(d => d.type === 'credit' && d.original_invoice_id).length} documents (linked to invoices)
-                </p>
-              </div>
-              <CreditCard className="h-12 w-12 text-red-600 opacity-20" />
-            </div>
-          </div>
-
-          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-gray-600">Net Amount</p>
-                <p className={`text-2xl font-bold ${netAmount >= 0 ? 'text-blue-600' : 'text-orange-600'}`}>
-                  {netAmount.toLocaleString()} EGP
-                </p>
-                <p className="text-xs text-gray-500 mt-1">
-                  {filteredData.length} total documents
-                </p>
-              </div>
-              <DollarSign className="h-12 w-12 text-blue-600 opacity-20" />
-            </div>
-          </div>
+        {/* Refresh Button */}
+        <div className="mb-4">
+          <button
+            onClick={refreshStatistics}
+            className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
+          >
+            🔄 Refresh Statistics
+          </button>
         </div>
 
         {/* Filters */}
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">
-          <div className="flex items-center gap-2 mb-4">
-            <Filter className="h-5 w-5 text-gray-600" />
-            <h2 className="text-lg font-semibold text-gray-900">Filters</h2>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+        <div className="bg-white dark:bg-slate-800 rounded-lg p-4 shadow-sm border border-slate-200 dark:border-slate-700 mb-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
             {/* Document Type */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Type</label>
+              <label className="block text-sm font-medium mb-2">Document Type</label>
               <select
                 value={documentType}
-                onChange={(e) => setDocumentType(e.target.value as DocumentType)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                onChange={(e) => {
+                  setDocumentType(e.target.value as DocumentType);
+                  setCurrentPage(1);
+                }}
+                className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700"
               >
                 <option value="all">All Documents</option>
                 <option value="invoices">Invoices Only</option>
@@ -459,303 +422,134 @@ export default function InvoicesPage() {
 
             {/* Search */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Search</label>
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
-                <input
-                  type="text"
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  placeholder="Number or partner..."
-                  className="w-full pl-10 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                />
-              </div>
-            </div>
-
-            {/* Start Date */}
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">From Date</label>
+              <label className="block text-sm font-medium mb-2">Search</label>
               <input
-                type="date"
-                value={startDate}
-                onChange={(e) => setStartDate(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-              />
-            </div>
-
-            {/* End Date */}
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">To Date</label>
-              <input
-                type="date"
-                value={endDate}
-                onChange={(e) => setEndDate(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                type="text"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                placeholder="Search by number or customer..."
+                className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700"
               />
             </div>
 
             {/* Payment Method */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Payment Method</label>
+              <label className="block text-sm font-medium mb-2">Payment Method</label>
               <select
                 value={selectedPaymentMethod}
                 onChange={(e) => setSelectedPaymentMethod(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700"
               >
                 <option value="all">All Methods</option>
-                {paymentMethods.map(pm => (
-                  <option key={pm.id} value={pm.id}>{pm.name_en}</option>
+                {paymentMethods.map((method) => (
+                  <option key={method.id} value={method.id}>
+                    {method.method_name}
+                  </option>
                 ))}
               </select>
             </div>
 
             {/* Credits Filter */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Credit Status</label>
+              <label className="block text-sm font-medium mb-2">Credits Status</label>
               <select
                 value={hasCreditsFilter}
-                onChange={(e) => setHasCreditsFilter(e.target.value as 'all' | 'with_credits' | 'no_credits')}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                disabled={documentType === 'credits'}
+                onChange={(e) => setHasCreditsFilter(e.target.value as any)}
+                className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700"
               >
                 <option value="all">All Invoices</option>
-                <option value="with_credits">Has Credits</option>
+                <option value="with_credits">With Credits</option>
                 <option value="no_credits">No Credits</option>
               </select>
             </div>
           </div>
-
-          <div className="flex justify-between items-center mt-4 pt-4 border-t border-gray-200">
-            <button
-              onClick={() => {
-                setSearchTerm('');
-                setStartDate('');
-                setEndDate('');
-                setSelectedPaymentMethod('all');
-                setDocumentType('all');
-                setHasCreditsFilter('all');
-              }}
-              className="text-sm text-gray-600 hover:text-gray-900"
-            >
-              Clear Filters
-            </button>
-            <button
-              onClick={exportToCSV}
-              className="flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700"
-            >
-              <Download className="h-4 w-4" />
-              Export CSV
-            </button>
-          </div>
         </div>
 
         {/* Data Table */}
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Type</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Number</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Partner</th>
-                  <th 
-                    className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100"
-                    onClick={() => toggleSort('sale_order_date')}
-                  >
-                    <div className="flex items-center gap-1">
-                      <Calendar className="h-4 w-4" />
-                      Sale Order Date
-                      {sortField === 'sale_order_date' && (
-                        sortOrder === 'asc' ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />
-                      )}
-                    </div>
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Payment Method</th>
-                  <th 
-                    className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100"
-                    onClick={() => toggleSort('amount_total')}
-                  >
-                    <div className="flex items-center justify-end gap-1">
-                      Amount Total
-                      {sortField === 'amount_total' && (
-                        sortOrder === 'asc' ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />
-                      )}
-                    </div>
-                  </th>
-                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Credits Applied</th>
-                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Net Amount</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
-                </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-gray-200">
-                {paginatedData.length === 0 ? (
-                  <tr>
-                    <td colSpan={9} className="px-6 py-12 text-center text-gray-500">
-                      <FileText className="mx-auto h-12 w-12 text-gray-300 mb-2" />
-                      <p>No documents found</p>
-                      <p className="text-sm mt-1">Try adjusting your filters</p>
-                    </td>
-                  </tr>
-                ) : (
-                  paginatedData.map((item, idx) => (
-                    <tr key={idx} className="hover:bg-gray-50">
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <div className="flex items-center gap-2">
-                          <span className={`inline-flex px-2 py-1 text-xs font-medium rounded-full ${
-                            item.type === 'invoice' 
-                              ? 'bg-green-100 text-green-800' 
-                              : 'bg-red-100 text-red-800'
-                          }`}>
-                            {item.type === 'invoice' ? 'Invoice' : 'Credit'}
-                          </span>
-                          {item.type === 'invoice' && item.has_credits && (
-                            <span className="inline-flex items-center px-2 py-1 text-xs font-medium rounded-full bg-orange-100 text-orange-800" title="Has credits applied">
-                              🏴 Credits
-                            </span>
-                          )}
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                        {item.type === 'invoice' ? item.invoice_number : item.credit_note_number}
-                      </td>
-                      <td className="px-6 py-4 text-sm text-gray-900">
-                        {item.partner_name}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                        {new Date(item.sale_order_date).toLocaleDateString()}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                        {item.payment_methods?.name_en || 'N/A'}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-right font-medium text-gray-900">
-                        {item.amount_total.toLocaleString()} EGP
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-right font-medium text-red-600">
-                        {item.type === 'invoice' && item.credits_applied > 0 ? (
-                          `(${item.credits_applied.toLocaleString()}) EGP`
-                        ) : (
-                          <span className="text-gray-400">-</span>
-                        )}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-right font-bold text-blue-600">
-                        {item.type === 'invoice' && item.credits_applied > 0 ? (
-                          `${item.net_amount.toLocaleString()} EGP`
-                        ) : (
-                          <span className="text-gray-400">-</span>
-                        )}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <span className={`inline-flex px-2 py-1 text-xs font-medium rounded-full ${
-                          item.state === 'posted' 
-                            ? 'bg-blue-100 text-blue-800' 
-                            : 'bg-gray-100 text-gray-800'
-                        }`}>
-                          {item.state}
-                        </span>
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-          
-          {/* Pagination */}
-          {totalPages > 1 && (
-            <div className="bg-white px-4 py-3 flex items-center justify-between border-t border-gray-200 sm:px-6">
-              <div className="flex-1 flex justify-between items-center sm:hidden">
-                <button
-                  onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
-                  disabled={currentPage === 1}
-                  className="relative inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  Previous
-                </button>
-                <span className="text-sm text-gray-700">
-                  Page {currentPage} of {totalPages}
-                </span>
-                <button
-                  onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
-                  disabled={currentPage === totalPages}
-                  className="ml-3 relative inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  Next
-                </button>
-              </div>
-              <div className="hidden sm:flex-1 sm:flex sm:items-center sm:justify-between">
-                <div>
-                  <p className="text-sm text-gray-700">
-                    Showing <span className="font-medium">{(currentPage - 1) * itemsPerPage + 1}</span> to{' '}
-                    <span className="font-medium">{Math.min(currentPage * itemsPerPage, filteredData.length)}</span> of{' '}
-                    <span className="font-medium">{filteredData.length}</span> results
-                  </p>
-                </div>
-                <div>
-                  <nav className="relative z-0 inline-flex rounded-md shadow-sm -space-x-px" aria-label="Pagination">
-                    <button
-                      onClick={() => setCurrentPage(1)}
-                      disabled={currentPage === 1}
-                      className="relative inline-flex items-center px-2 py-2 rounded-l-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      First
-                    </button>
-                    <button
-                      onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
-                      disabled={currentPage === 1}
-                      className="relative inline-flex items-center px-2 py-2 border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      Previous
-                    </button>
-                    
-                    {/* Page numbers */}
-                    {[...Array(Math.min(5, totalPages))].map((_, i) => {
-                      let pageNum;
-                      if (totalPages <= 5) {
-                        pageNum = i + 1;
-                      } else if (currentPage <= 3) {
-                        pageNum = i + 1;
-                      } else if (currentPage >= totalPages - 2) {
-                        pageNum = totalPages - 4 + i;
-                      } else {
-                        pageNum = currentPage - 2 + i;
-                      }
-                      
-                      return (
-                        <button
-                          key={pageNum}
-                          onClick={() => setCurrentPage(pageNum)}
-                          className={`relative inline-flex items-center px-4 py-2 border text-sm font-medium ${
-                            currentPage === pageNum
-                              ? 'z-10 bg-blue-50 border-blue-500 text-blue-600'
-                              : 'bg-white border-gray-300 text-gray-500 hover:bg-gray-50'
-                          }`}
-                        >
-                          {pageNum}
-                        </button>
-                      );
-                    })}
-                    
-                    <button
-                      onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
-                      disabled={currentPage === totalPages}
-                      className="relative inline-flex items-center px-2 py-2 border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      Next
-                    </button>
-                    <button
-                      onClick={() => setCurrentPage(totalPages)}
-                      disabled={currentPage === totalPages}
-                      className="relative inline-flex items-center px-2 py-2 rounded-r-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      Last
-                    </button>
-                  </nav>
-                </div>
+        <div className="bg-white dark:bg-slate-800 rounded-lg shadow-sm border border-slate-200 dark:border-slate-700">
+          <div className="p-4 border-b border-slate-200 dark:border-slate-700">
+            <div className="flex items-center justify-between">
+              <h2 className="text-xl font-semibold">
+                Documents (Page {currentPage} / {totalPages})
+              </h2>
+              <div className="text-sm text-slate-600">
+                Showing {filteredData.length} items on this page
               </div>
             </div>
+          </div>
+
+          {loading ? (
+            <div className="p-12 text-center">
+              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto"></div>
+              <p className="mt-4 text-slate-600">Loading page {currentPage}...</p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead className="bg-slate-50 dark:bg-slate-900">
+                  <tr>
+                    <th className="px-4 py-3 text-left text-sm font-medium">Type</th>
+                    <th className="px-4 py-3 text-left text-sm font-medium">Number</th>
+                    <th className="px-4 py-3 text-left text-sm font-medium">Customer</th>
+                    <th className="px-4 py-3 text-left text-sm font-medium">Date</th>
+                    <th className="px-4 py-3 text-right text-sm font-medium">Amount</th>
+                    <th className="px-4 py-3 text-left text-sm font-medium">Payment Method</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
+                  {filteredData.map((item, index) => (
+                    <tr key={`${item.type}-${item.id}-${index}`} className="hover:bg-slate-50 dark:hover:bg-slate-900/50">
+                      <td className="px-4 py-3">
+                        <span className={`px-2 py-1 rounded text-xs font-medium ${
+                          item.type === 'invoice' 
+                            ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
+                            : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
+                        }`}>
+                          {item.type === 'invoice' ? 'Invoice' : 'Credit'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 font-mono text-sm">{item.number}</td>
+                      <td className="px-4 py-3">{item.customer_name || '-'}</td>
+                      <td className="px-4 py-3 text-sm text-slate-600">
+                        {new Date(item.date).toLocaleDateString()}
+                      </td>
+                      <td className="px-4 py-3 text-right font-medium">
+                        EGP {item.amount?.toLocaleString()}
+                      </td>
+                      <td className="px-4 py-3 text-sm">
+                        {paymentMethods.find(m => m.id === item.payment_method_id)?.method_name || '-'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
+
+          {/* Pagination */}
+          <div className="p-4 border-t border-slate-200 dark:border-slate-700 flex items-center justify-between">
+            <div className="text-sm text-slate-600">
+              Page {currentPage} of {totalPages} • {filteredData.length} items on this page
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                disabled={currentPage === 1 || loading}
+                className="px-4 py-2 rounded-lg bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                ← Previous
+              </button>
+              <button
+                onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                disabled={currentPage >= totalPages || loading}
+                className="px-4 py-2 rounded-lg bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                Next →
+              </button>
+            </div>
+          </div>
         </div>
-      </main>
+      </div>
     </div>
   );
 }
