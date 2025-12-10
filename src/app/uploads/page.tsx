@@ -476,8 +476,8 @@ export default function UploadsPage() {
             }
           }
 
-          // Phase 2: Batch insert (1000 at a time)
-          const BATCH_SIZE = 1000;
+          // Phase 2: Batch insert (2000 at a time)
+          const BATCH_SIZE = 2000;
           console.log(`⚡ Batch inserting ${recordsToInsert.length} records (${BATCH_SIZE} per batch)...`);
           
           for (let i = 0; i < recordsToInsert.length; i += BATCH_SIZE) {
