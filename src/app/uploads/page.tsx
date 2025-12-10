@@ -409,9 +409,17 @@ export default function UploadsPage() {
 
           // Group by Reference + Payment Gateway (composite key)
           const groupedData = new Map<string, any>();
+          let skippedEmptyRefs = 0;
           
           for (const row of jsonData) {
             const reference = row['Reference'] || '';
+            
+            // Skip rows with empty reference
+            if (!reference || reference.trim() === '') {
+              skippedEmptyRefs++;
+              continue;
+            }
+            
             const amount = parseAmount(row['Total in Currency Signed'] || row['Amount'] || row['Total'] || '0');
             const saleOrderDate = parseDate(row['Sale Order Date'] || row['Order Date'] || '');
             const paymentGateway = row['Payment Gateway'] || row['Payment Method'] || '';
@@ -441,6 +449,9 @@ export default function UploadsPage() {
           }
 
           console.log(`📊 Grouped ${jsonData.length} rows into ${groupedData.size} unique (Reference + Gateway) combinations`);
+          if (skippedEmptyRefs > 0) {
+            console.log(`⏭️ Skipped ${skippedEmptyRefs} rows with empty Reference`);
+          }
 
           // Prepare constants
           const table = type === 'invoice' ? 'invoices' : 'credit_notes';
@@ -549,7 +560,7 @@ export default function UploadsPage() {
               }
 
               const recordData: any = {
-                [numberField]: groupedRow.reference || `AUTO-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+                [numberField]: groupedRow.reference, // Reference is already validated (not empty)
                 partner_name: 'Imported Customer',
                 payment_method_id: paymentMethod?.id || null,
                 [dateField]: groupedRow.saleOrderDate,
