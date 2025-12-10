@@ -427,7 +427,7 @@ export default function UploadsPage() {
               .select('id, invoice_number, payment_method_id');
             
             if (allInvoices) {
-              // Build composite key map: "invoice_number|payment_method_id" → invoice
+              // Build simple key map: "invoice_number|payment_method_id" → invoice
               allInvoices.forEach(inv => {
                 const key = `${inv.invoice_number}|${inv.payment_method_id || 'null'}`;
                 invoicesMap.set(key, inv);
@@ -480,19 +480,21 @@ export default function UploadsPage() {
               }
 
               if (type === 'credit') {
-                // Fast O(1) lookup from pre-loaded map
+                // Fast O(1) lookup from pre-loaded map using reference + payment_method_id
                 const lookupKey = `${groupedRow.reference}|${paymentMethod?.id || 'null'}`;
                 const matchingInvoice = invoicesMap.get(lookupKey);
                 
                 if (matchingInvoice) {
                   recordData.original_invoice_id = matchingInvoice.id;
+                  console.log(`✅ Matched credit ${groupedRow.reference} to invoice ${matchingInvoice.id}`);
                 } else {
                   // Debug: Log first 5 mismatches
                   if (recordsToInsert.length < 5) {
                     console.log(`❌ No match for credit: ${groupedRow.reference} | Gateway: ${groupedRow.paymentGateway} | Method ID: ${paymentMethod?.id || 'null'}`);
+                    console.log(`   Lookup key: "${lookupKey}"`);
                     console.log(`   Available invoice keys sample:`, Array.from(invoicesMap.keys()).slice(0, 5));
                   }
-                  continue; // Skip if no matching invoice+gateway
+                  continue; // Skip if no matching invoice
                 }
               }
 
