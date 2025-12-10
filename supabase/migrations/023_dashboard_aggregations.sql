@@ -23,7 +23,7 @@ RETURNS TABLE (
   total_deposits_count BIGINT
 )
 LANGUAGE plpgsql
-SECURITY DEFINER
+SECURITY INVOKER  -- Use caller's permissions (respects RLS)
 STABLE
 AS $$
 BEGIN
@@ -99,11 +99,11 @@ BEGIN
       ), 0
     ) AS net_sales,
     
-    -- Deposits aggregation
+    -- Deposits aggregation (use user_id not imported_by)
     COALESCE(
       (SELECT SUM(net_amount)
        FROM deposits
-       WHERE imported_by = auth.uid()
+       WHERE user_id = auth.uid()
          AND start_date <= p_end_date
          AND end_date >= p_start_date
          AND (p_payment_method_id IS NULL OR payment_method_id = p_payment_method_id)
@@ -113,7 +113,7 @@ BEGIN
     COALESCE(
       (SELECT COUNT(*)
        FROM deposits
-       WHERE imported_by = auth.uid()
+       WHERE user_id = auth.uid()
          AND start_date <= p_end_date
          AND end_date >= p_start_date
          AND (p_payment_method_id IS NULL OR payment_method_id = p_payment_method_id)
