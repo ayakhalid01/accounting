@@ -375,7 +375,7 @@ export default function UploadsPage() {
           let successCount = 0;
           const errors: string[] = [];
 
-          // Group by Reference and sum amounts
+          // Group by Reference + Payment Gateway (composite key)
           const groupedData = new Map<string, any>();
           
           for (const row of jsonData) {
@@ -384,9 +384,12 @@ export default function UploadsPage() {
             const saleOrderDate = parseDate(row['Sale Order Date'] || row['Order Date'] || '');
             const paymentGateway = row['Payment Gateway'] || row['Payment Method'] || '';
             
-            if (groupedData.has(reference)) {
+            // Create composite key: "Reference|PaymentGateway"
+            const compositeKey = `${reference}|${paymentGateway}`;
+            
+            if (groupedData.has(compositeKey)) {
               // Add to existing and take the latest date
-              const existing = groupedData.get(reference);
+              const existing = groupedData.get(compositeKey);
               existing.amount += Math.abs(amount);
               
               // Compare ISO strings directly (faster than creating Date objects)
@@ -395,7 +398,7 @@ export default function UploadsPage() {
               }
             } else {
               // Create new entry
-              groupedData.set(reference, {
+              groupedData.set(compositeKey, {
                 reference,
                 amount: Math.abs(amount),
                 saleOrderDate,
@@ -405,7 +408,7 @@ export default function UploadsPage() {
             }
           }
 
-          console.log(`📊 Grouped ${jsonData.length} rows into ${groupedData.size} unique references`);
+          console.log(`📊 Grouped ${jsonData.length} rows into ${groupedData.size} unique (Reference + Gateway) combinations`);
 
           // Prepare constants
           const table = type === 'invoice' ? 'invoices' : 'credit_notes';
