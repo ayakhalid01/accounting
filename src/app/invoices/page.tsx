@@ -360,17 +360,100 @@ export default function InvoicesPage() {
       console.log('📥 [CSV] Downloading ALL data...');
       setLoading(true);
 
-      // Load ALL invoices and credits (no pagination)
-      const [allInvoicesRes, allCreditsRes] = await Promise.all([
-        supabase.from('invoices').select('*').order('sale_order_date', { ascending: false }),
-        supabase.from('credit_notes').select('*').not('original_invoice_id', 'is', null).order('credit_date', { ascending: false })
-      ]);
+      // ============================================
+      // Load ALL Invoices (Bypass 1000 limit with batches)
+      // ============================================
+      const BATCH_SIZE = 1000;
+      const PARALLEL_BATCHES = 5;
+      let allInvoices: Invoice[] = [];
+      let offset = 0;
+      let hasMoreInvoices = true;
 
-      if (allInvoicesRes.error) throw allInvoicesRes.error;
-      if (allCreditsRes.error) throw allCreditsRes.error;
+      console.log('📥 [CSV] Loading ALL invoices...');
+      while (hasMoreInvoices) {
+        const promises = [];
+        
+        for (let i = 0; i < PARALLEL_BATCHES; i++) {
+          const currentOffset = offset + (i * BATCH_SIZE);
+          promises.push(
+            supabase
+              .from('invoices')
+              .select('*')
+              .order('sale_order_date', { ascending: false })
+              .range(currentOffset, currentOffset + BATCH_SIZE - 1)
+          );
+        }
 
-      const allInvoices = allInvoicesRes.data || [];
-      const allCredits = allCreditsRes.data || [];
+        const results = await Promise.all(promises);
+        let batchData: Invoice[] = [];
+        
+        for (const result of results) {
+          if (result.error) throw result.error;
+          if (result.data) {
+            batchData = [...batchData, ...result.data];
+          }
+        }
+
+        if (batchData.length === 0) {
+          hasMoreInvoices = false;
+        } else {
+          allInvoices.push(...batchData);
+          offset += BATCH_SIZE * PARALLEL_BATCHES;
+          console.log(`📥 [CSV] Loaded ${allInvoices.length} invoices...`);
+          
+          if (batchData.length < BATCH_SIZE * PARALLEL_BATCHES) {
+            hasMoreInvoices = false;
+          }
+        }
+      }
+
+      // ============================================
+      // Load ALL Credits (Bypass 1000 limit with batches)
+      // ============================================
+      let allCredits: CreditNote[] = [];
+      offset = 0;
+      let hasMoreCredits = true;
+
+      console.log('📥 [CSV] Loading ALL credits...');
+      while (hasMoreCredits) {
+        const promises = [];
+        
+        for (let i = 0; i < PARALLEL_BATCHES; i++) {
+          const currentOffset = offset + (i * BATCH_SIZE);
+          promises.push(
+            supabase
+              .from('credit_notes')
+              .select('*')
+              .not('original_invoice_id', 'is', null)
+              .order('credit_date', { ascending: false })
+              .range(currentOffset, currentOffset + BATCH_SIZE - 1)
+          );
+        }
+
+        const results = await Promise.all(promises);
+        let batchData: CreditNote[] = [];
+        
+        for (const result of results) {
+          if (result.error) throw result.error;
+          if (result.data) {
+            batchData = [...batchData, ...result.data];
+          }
+        }
+
+        if (batchData.length === 0) {
+          hasMoreCredits = false;
+        } else {
+          allCredits.push(...batchData);
+          offset += BATCH_SIZE * PARALLEL_BATCHES;
+          console.log(`📥 [CSV] Loaded ${allCredits.length} credits...`);
+          
+          if (batchData.length < BATCH_SIZE * PARALLEL_BATCHES) {
+            hasMoreCredits = false;
+          }
+        }
+      }
+
+      console.log(`✅ [CSV] Total loaded: ${allInvoices.length} invoices + ${allCredits.length} credits`);
 
       // Build credits map for invoices
       const creditsMap = new Map<string, number>();
@@ -383,13 +466,13 @@ export default function InvoicesPage() {
 
       // Combine all data
       const allData = [
-        ...allInvoices.map(inv => {
+        ...allInvoices.map((inv: any) => {
           const creditsApplied = creditsMap.get(inv.id) || 0;
           const netAmount = inv.amount_total - creditsApplied;
           return {
             Type: 'Invoice',
             Number: inv.invoice_number,
-            Customer: inv.customer_name || '',
+            Customer: inv.customer_name || inv.partner_name || '',
             Date: new Date(inv.sale_order_date).toLocaleDateString(),
             'Amount Total': inv.amount_total,
             'Credits Applied': creditsApplied > 0 ? creditsApplied : 0,
@@ -399,10 +482,10 @@ export default function InvoicesPage() {
             'Has Credits': creditsApplied > 0 ? 'Yes' : 'No'
           };
         }),
-        ...allCredits.map(cr => ({
+        ...allCredits.map((cr: any) => ({
           Type: 'Credit Note',
           Number: cr.credit_note_number,
-          Customer: cr.customer_name || '',
+          Customer: cr.customer_name || cr.partner_name || '',
           Date: new Date(cr.credit_date).toLocaleDateString(),
           'Amount Total': cr.amount_total,
           'Credits Applied': '-',
@@ -417,7 +500,7 @@ export default function InvoicesPage() {
       const headers = Object.keys(allData[0]);
       const csvContent = [
         headers.join(','),
-        ...allData.map(row => headers.map(h => `"${row[h]}"`).join(','))
+        ...allData.map(row => headers.map(h => `"${(row as any)[h]}"`).join(','))
       ].join('\n');
 
       // Download
