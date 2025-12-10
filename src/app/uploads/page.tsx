@@ -182,42 +182,55 @@ export default function UploadsPage() {
     return parseFloat(cleaned) || 0;
   };
 
+  // Cache for parsed dates (speeds up repeated date parsing)
+  const dateCache = new Map<string, string>();
+  
+  // Excel epoch constants (pre-calculated)
+  const EXCEL_EPOCH_MS = new Date(1900, 0, 1).getTime();
+  const MS_PER_DAY = 86400000; // 24 * 60 * 60 * 1000
+  
   const parseDate = (dateStr: string): string => {
+    if (!dateStr) return new Date().toISOString();
+    
+    const dateKey = dateStr.toString();
+    
+    // Check cache first (huge speedup for duplicate dates!)
+    if (dateCache.has(dateKey)) {
+      return dateCache.get(dateKey)!;
+    }
+    
     try {
-      if (!dateStr) return new Date().toISOString();
-      
-      const dateValue = dateStr.toString().trim();
+      const dateValue = dateKey.trim();
       
       // Check if it's an Excel serial number (numeric value like 45987.98545138889)
       const numericDate = parseFloat(dateValue);
       if (!isNaN(numericDate) && numericDate > 40000 && numericDate < 60000) {
         // Excel date serial number (days since 1900-01-01)
-        // Excel starts from 1900-01-01, but has a bug: it thinks 1900 was a leap year
-        const excelEpoch = new Date(1900, 0, 1);
-        const days = Math.floor(numericDate) - 2; // -2 to account for Excel's leap year bug and 0-indexing
-        const milliseconds = (numericDate - Math.floor(numericDate)) * 24 * 60 * 60 * 1000;
-        
-        const date = new Date(excelEpoch.getTime() + (days * 24 * 60 * 60 * 1000) + milliseconds);
-        console.log(`📅 Excel date ${numericDate} → ${date.toISOString()}`);
-        return date.toISOString();
+        const days = Math.floor(numericDate) - 2; // -2 to account for Excel's leap year bug
+        const milliseconds = (numericDate - Math.floor(numericDate)) * MS_PER_DAY;
+        const timestamp = EXCEL_EPOCH_MS + (days * MS_PER_DAY) + milliseconds;
+        const result = new Date(timestamp).toISOString();
+        dateCache.set(dateKey, result);
+        return result;
       }
       
       // Handle text date format "2025-09-30 14:28:28" or "2025-09-30"
-      let cleanDate = dateValue;
-      if (cleanDate.includes(' ')) {
-        cleanDate = cleanDate.split(' ')[0];
-      }
-      
+      const cleanDate = dateValue.includes(' ') ? dateValue.split(' ')[0] : dateValue;
       const date = new Date(cleanDate);
+      
       if (isNaN(date.getTime())) {
-        console.warn('Invalid date:', dateStr);
-        return new Date().toISOString();
+        const now = new Date().toISOString();
+        dateCache.set(dateKey, now);
+        return now;
       }
       
-      return date.toISOString();
+      const result = date.toISOString();
+      dateCache.set(dateKey, result);
+      return result;
     } catch (err) {
-      console.error('Error parsing date:', dateStr, err);
-      return new Date().toISOString();
+      const now = new Date().toISOString();
+      dateCache.set(dateKey, now);
+      return now;
     }
   };
 
@@ -229,6 +242,7 @@ export default function UploadsPage() {
     setError('');
 
     try {
+      // Quick preview without full parsing (just read row count)
       const reader = new FileReader();
       reader.onload = (event) => {
         const data = event.target?.result;
@@ -237,7 +251,8 @@ export default function UploadsPage() {
         const worksheet = workbook.Sheets[sheetName];
         const jsonData: any[] = XLSX.utils.sheet_to_json(worksheet);
 
-        const parsedRows: ParsedRow[] = jsonData.map((row: any) => {
+        // Lightweight preview - only parse first 10 rows for display
+        const parsedRows: ParsedRow[] = jsonData.slice(0, 10).map((row: any) => {
           const amount = parseAmount(row['Total in Currency Signed'] || row['Amount'] || row['Total'] || '0');
           
           return {
@@ -254,7 +269,7 @@ export default function UploadsPage() {
           name: selectedFile.name,
           size: selectedFile.size,
           totalRows: jsonData.length,
-          data: parsedRows.slice(0, 10),
+          data: parsedRows,
         };
 
         if (type === 'invoice') {
@@ -345,12 +360,18 @@ export default function UploadsPage() {
       const reader = new FileReader();
       reader.onload = async (event) => {
         try {
+          const startTime = performance.now();
+          
+          // Clear date cache for fresh parsing
+          dateCache.clear();
+          
           const data = event.target?.result;
           const workbook = XLSX.read(data, { type: 'binary' });
           const sheetName = workbook.SheetNames[0];
           const worksheet = workbook.Sheets[sheetName];
           const jsonData: any[] = XLSX.utils.sheet_to_json(worksheet);
 
+          console.log(`⚡ Parsing ${jsonData.length} rows...`);
           let successCount = 0;
           const errors: string[] = [];
 
@@ -363,19 +384,14 @@ export default function UploadsPage() {
             const saleOrderDate = parseDate(row['Sale Order Date'] || row['Order Date'] || '');
             const paymentGateway = row['Payment Gateway'] || row['Payment Method'] || '';
             
-            console.log(`📝 Processing row: ${reference} | Date: ${row['Sale Order Date']} | Amount: ${amount}`);
-            
             if (groupedData.has(reference)) {
               // Add to existing and take the latest date
               const existing = groupedData.get(reference);
               existing.amount += Math.abs(amount);
               
-              // Compare dates and keep the latest
-              const existingDate = new Date(existing.saleOrderDate);
-              const newDate = new Date(saleOrderDate);
-              if (newDate > existingDate) {
+              // Compare ISO strings directly (faster than creating Date objects)
+              if (saleOrderDate > existing.saleOrderDate) {
                 existing.saleOrderDate = saleOrderDate;
-                console.log(`  ✅ Updated date to newer: ${saleOrderDate}`);
               }
             } else {
               // Create new entry
@@ -386,7 +402,6 @@ export default function UploadsPage() {
                 paymentGateway,
                 status: row['Status'] || 'posted'
               });
-              console.log(`  ✨ New entry created with date: ${saleOrderDate}`);
             }
           }
 
@@ -515,12 +530,17 @@ export default function UploadsPage() {
             setError(`Imported ${successCount} ${type}s with ${errors.length} errors. Check console.`);
             console.error('❌ Import errors:', errors);
           } else {
+            const endTime = performance.now();
+            const duration = ((endTime - startTime) / 1000).toFixed(2);
+            const cacheHits = jsonData.length - dateCache.size;
+            console.log(`⚡ Import completed in ${duration}s | Cache hits: ${cacheHits}/${jsonData.length}`);
+            
             if (type === 'credit') {
               const totalGrouped = groupedData.size;
               const skippedCount = totalGrouped - successCount;
-              setSuccess(`Successfully imported ${successCount} credit(s)! ${skippedCount > 0 ? `(${skippedCount} skipped - no matching invoice)` : ''}`);
+              setSuccess(`Successfully imported ${successCount} credit(s) in ${duration}s! ${skippedCount > 0 ? `(${skippedCount} skipped - no matching invoice)` : ''}`);
             } else {
-              setSuccess(`Successfully imported ${successCount} ${type}s!`);
+              setSuccess(`Successfully imported ${successCount} ${type}s in ${duration}s!`);
             }
           }
 
