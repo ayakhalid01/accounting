@@ -11,12 +11,12 @@
 
 -- Composite index for invoices query (covers all WHERE conditions)
 CREATE INDEX IF NOT EXISTS idx_invoices_aggregation 
-ON invoices(imported_by, state, sale_order_date, payment_method_id)
+ON invoices(state, sale_order_date, payment_method_id)
 WHERE state = 'posted';
 
 -- Composite index for credit_notes query
 CREATE INDEX IF NOT EXISTS idx_credits_aggregation 
-ON credit_notes(imported_by, state, sale_order_date, payment_method_id)
+ON credit_notes(state, sale_order_date, payment_method_id, original_invoice_id)
 WHERE state = 'posted' AND original_invoice_id IS NOT NULL;
 
 -- =====================================================
@@ -46,8 +46,7 @@ AS $$
       COALESCE(SUM(amount_total), 0) as total_amount,
       COUNT(*) as total_count
     FROM invoices
-    WHERE imported_by = auth.uid()
-      AND state = 'posted'
+    WHERE state = 'posted'
       AND sale_order_date BETWEEN p_start_date AND p_end_date
       AND (p_payment_method_id IS NULL OR payment_method_id = p_payment_method_id)
   ),
@@ -56,8 +55,7 @@ AS $$
       COALESCE(SUM(ABS(amount_total)), 0) as total_amount,
       COUNT(*) as total_count
     FROM credit_notes
-    WHERE imported_by = auth.uid()
-      AND state = 'posted'
+    WHERE state = 'posted'
       AND original_invoice_id IS NOT NULL
       AND sale_order_date BETWEEN p_start_date AND p_end_date
       AND (p_payment_method_id IS NULL OR payment_method_id = p_payment_method_id)
