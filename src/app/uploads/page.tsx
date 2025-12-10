@@ -418,21 +418,30 @@ export default function UploadsPage() {
           const dateField = type === 'invoice' ? 'invoice_date' : 'credit_date';
           const recordsToInsert: any[] = [];
 
-          // For credits: Pre-load ALL invoices at once (faster than querying one by one)
+          // For credits: Pre-load ALL invoices with payment gateway names
           let invoicesMap = new Map<string, any>();
           if (type === 'credit') {
-            console.log('⚡ Pre-loading all invoices for fast matching...');
+            console.log('⚡ Pre-loading all invoices with payment gateways for matching...');
             const { data: allInvoices } = await supabase
               .from('invoices')
-              .select('id, invoice_number, payment_method_id');
+              .select(`
+                id, 
+                invoice_number, 
+                payment_method_id,
+                payment_methods(name_en, name_ar, code)
+              `);
             
             if (allInvoices) {
-              // Build simple key map: "invoice_number|payment_method_id" → invoice
+              // Build key map: "invoice_number|gateway_name" → invoice
               allInvoices.forEach(inv => {
-                const key = `${inv.invoice_number}|${inv.payment_method_id || 'null'}`;
+                const gatewayName = (inv as any).payment_methods?.name_en || 
+                                   (inv as any).payment_methods?.code || 
+                                   'null';
+                const key = `${inv.invoice_number}|${gatewayName}`;
                 invoicesMap.set(key, inv);
               });
               console.log(`✅ Loaded ${allInvoices.length} invoices into memory for O(1) matching`);
+              console.log(`📋 Sample keys:`, Array.from(invoicesMap.keys()).slice(0, 3));
             }
           }
 
@@ -480,19 +489,19 @@ export default function UploadsPage() {
               }
 
               if (type === 'credit') {
-                // Fast O(1) lookup from pre-loaded map using reference + payment_method_id
-                const lookupKey = `${groupedRow.reference}|${paymentMethod?.id || 'null'}`;
+                // Match by Reference + Payment Gateway Name (not ID!)
+                const gatewayName = paymentMethod?.name_en || paymentMethod?.code || groupedRow.paymentGateway;
+                const lookupKey = `${groupedRow.reference}|${gatewayName}`;
                 const matchingInvoice = invoicesMap.get(lookupKey);
                 
                 if (matchingInvoice) {
                   recordData.original_invoice_id = matchingInvoice.id;
-                  console.log(`✅ Matched credit ${groupedRow.reference} to invoice ${matchingInvoice.id}`);
+                  console.log(`✅ Matched: ${lookupKey}`);
                 } else {
                   // Debug: Log first 5 mismatches
                   if (recordsToInsert.length < 5) {
-                    console.log(`❌ No match for credit: ${groupedRow.reference} | Gateway: ${groupedRow.paymentGateway} | Method ID: ${paymentMethod?.id || 'null'}`);
-                    console.log(`   Lookup key: "${lookupKey}"`);
-                    console.log(`   Available invoice keys sample:`, Array.from(invoicesMap.keys()).slice(0, 5));
+                    console.log(`❌ No match for: "${lookupKey}"`);
+                    console.log(`   Available sample:`, Array.from(invoicesMap.keys()).slice(0, 3));
                   }
                   continue; // Skip if no matching invoice
                 }
