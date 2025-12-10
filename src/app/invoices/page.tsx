@@ -399,14 +399,14 @@ export default function InvoicesPage() {
     {
       title: 'Total Invoices',
       value: `EGP ${(statistics?.total_invoices_amount || 0).toLocaleString()}`,
-      amount: statistics?.total_invoices_count.toLocaleString() || '0',
+      amount: `Total Quantity: ${statistics?.total_invoices_count.toLocaleString() || '0'}`,
       icon: FileText,
       color: 'text-blue-500'
     },
     {
       title: 'Total Credits',
       value: `EGP ${(statistics?.total_credits_amount || 0).toLocaleString()}`,
-      amount: statistics?.total_credits_count.toLocaleString() || '0',
+      amount: `Total Quantity: ${statistics?.total_credits_count.toLocaleString() || '0'}`,
       icon: CreditCard,
       color: 'text-red-500'
     },

@@ -107,6 +107,27 @@ export default function DashboardPage() {
     try {
       console.log('🔍 Loading data with filters:', { startDate, endDate, selectedMethod, periodType });
       
+      // ============================================
+      // STEP 1: Get accurate totals from database (bypasses 1000 limit)
+      // ============================================
+      const { data: aggregations, error: aggError } = await supabase.rpc('get_dashboard_aggregations', {
+        p_start_date: startDate,
+        p_end_date: endDate,
+        p_payment_method_id: selectedMethod === 'all' ? null : selectedMethod
+      });
+
+      if (aggError) {
+        console.error('❌ Aggregations error:', aggError);
+      }
+
+      console.log('📊 [Database] Total invoices:', aggregations?.[0]?.total_invoices_count || 0, 'Amount:', aggregations?.[0]?.total_invoices_amount || 0);
+      console.log('📊 [Database] Total credits:', aggregations?.[0]?.total_credits_count || 0, 'Amount:', aggregations?.[0]?.total_credits_amount || 0);
+      console.log('💰 [Database] Net Sales:', aggregations?.[0]?.net_sales || 0);
+      console.log('📊 [Database] Total deposits:', aggregations?.[0]?.total_deposits_count || 0, 'Amount:', aggregations?.[0]?.total_deposits_amount || 0);
+
+      // ============================================
+      // STEP 2: Load detailed data for period comparisons (still limited to 1000)
+      // ============================================
       // Build query filters - Get invoices
       let invoicesQuery = supabase
         .from('invoices')
@@ -145,45 +166,43 @@ export default function DashboardPage() {
       if (invError) console.error('❌ Invoices error:', invError);
       if (crError) console.error('❌ Credits error:', crError);
 
-      const totalInvoices = invoices?.reduce((s, i) => s + i.amount_total, 0) || 0;
-      const totalCredits = credits?.reduce((s, c) => s + Math.abs(c.amount_total), 0) || 0;
-      const netSales = totalInvoices - totalCredits;
+      console.log('📊 [Frontend] Loaded invoices for charts:', invoices?.length || 0);
+      console.log('📊 [Frontend] Loaded credits for charts:', credits?.length || 0);
+      console.log('📊 [Frontend] Loaded deposits for charts:', deposits?.length || 0);
 
-      console.log('📊 Loaded invoices:', invoices?.length || 0, 'Total:', totalInvoices);
-      console.log('📊 Loaded credits:', credits?.length || 0, 'Total:', totalCredits);
-      console.log('💰 Net Sales:', netSales);
-      console.log('📊 Loaded deposits:', deposits?.length || 0);
+      // Use DATABASE totals for stats (accurate)
+      const totalInvoices = aggregations?.[0]?.total_invoices_amount || 0;
+      const totalCredits = aggregations?.[0]?.total_credits_amount || 0;
+      const netSales = aggregations?.[0]?.net_sales || 0;
 
-      calculateStats(invoices || [], credits || [], deposits || []);
+      // Calculate deposits from database aggregation
+      const totalDeposits = aggregations?.[0]?.total_deposits_amount || 0;
+
+      // Use loaded data for deposits breakdown (approved vs pending)
+      const approvedDeposits = deposits?.filter(d => d.status === 'approved') || [];
+      const pendingDeposits = deposits?.filter(d => d.status === 'pending') || [];
+      
+      const approvedDepositsAmount = approvedDeposits.reduce((sum, d) => sum + d.net_amount, 0);
+      const pendingDepositsAmount = pendingDeposits.reduce((sum, d) => sum + d.net_amount, 0);
+      
+      const gapAmount = netSales - approvedDepositsAmount;
+      const gapAfterPending = netSales - approvedDepositsAmount - pendingDepositsAmount;
+
+      setStats({
+        totalSales: netSales,  // Use database total
+        approvedDepositsAmount,
+        pendingDepositsAmount,
+        approvedDepositsCount: approvedDeposits.length,
+        pendingDepositsCount: pendingDeposits.length,
+        gapAmount,
+        gapAfterPending,
+      });
+
+      // Period comparisons use loaded data (may be limited for large datasets)
       calculatePeriodComparisons(invoices || [], credits || [], deposits || []);
     } catch (err) {
       console.error('❌ Error loading dashboard data:', err);
     }
-  };
-
-  const calculateStats = (invoices: any[], credits: any[], deposits: any[]) => {
-    const totalInvoices = invoices.reduce((sum, inv) => sum + inv.amount_total, 0);
-    const totalCredits = credits.reduce((sum, cr) => sum + Math.abs(cr.amount_total), 0);
-    const totalSales = totalInvoices - totalCredits;
-    
-    const approvedDeposits = deposits.filter(d => d.status === 'approved');
-    const pendingDeposits = deposits.filter(d => d.status === 'pending');
-    
-    const approvedDepositsAmount = approvedDeposits.reduce((sum, d) => sum + d.net_amount, 0);
-    const pendingDepositsAmount = pendingDeposits.reduce((sum, d) => sum + d.net_amount, 0);
-    
-    const gapAmount = totalSales - approvedDepositsAmount;
-    const gapAfterPending = totalSales - approvedDepositsAmount - pendingDepositsAmount;
-
-    setStats({
-      totalSales,
-      approvedDepositsAmount,
-      pendingDepositsAmount,
-      approvedDepositsCount: approvedDeposits.length,
-      pendingDepositsCount: pendingDeposits.length,
-      gapAmount,
-      gapAfterPending,
-    });
   };
 
   const calculatePeriodComparisons = (invoices: any[], credits: any[], deposits: any[]) => {
