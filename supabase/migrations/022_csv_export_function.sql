@@ -19,20 +19,18 @@ AS $$
 BEGIN
   -- Return CSV header
   RETURN QUERY
-  SELECT 'Type,Number,Customer,Date,Amount Total,Credits Applied,Net Amount,Payment Method,Gateway,Has Credits'::TEXT;
+  SELECT 'Type,Number,Sale Date,Amount Total,Credits Applied,Net Amount,Payment Method,Has Credits'::TEXT;
   
   -- Return invoice rows with credits calculated
   RETURN QUERY
   SELECT 
     'Invoice,' ||
     COALESCE(i.invoice_number, '') || ',' ||
-    COALESCE(i.partner_name, '') || ',' ||
-    TO_CHAR(i.invoice_date, 'DD/MM/YYYY') || ',' ||
+    TO_CHAR(COALESCE(i.sale_order_date::date, i.invoice_date), 'DD/MM/YYYY') || ',' ||
     COALESCE(i.amount_total::TEXT, '0') || ',' ||
     COALESCE(credits.total_credits::TEXT, '0') || ',' ||
     COALESCE((i.amount_total - COALESCE(credits.total_credits, 0))::TEXT, '0') || ',' ||
-    COALESCE(pm.name_en, pm.method_name, '') || ',' ||
-    COALESCE(i.gateway_name, '') || ',' ||
+    COALESCE(pm.name_en, '') || ',' ||
     CASE WHEN credits.total_credits > 0 THEN 'Yes' ELSE 'No' END
   FROM invoices i
   LEFT JOIN (
@@ -45,20 +43,18 @@ BEGIN
   ) credits ON credits.original_invoice_id = i.id
   LEFT JOIN payment_methods pm ON pm.id = i.payment_method_id
   WHERE i.imported_by = auth.uid()
-  ORDER BY i.invoice_date DESC;
+  ORDER BY COALESCE(i.sale_order_date, i.invoice_date) DESC;
   
   -- Return credit note rows
   RETURN QUERY
   SELECT 
     'Credit Note,' ||
     COALESCE(c.credit_note_number, '') || ',' ||
-    COALESCE(c.partner_name, '') || ',' ||
     TO_CHAR(c.credit_date, 'DD/MM/YYYY') || ',' ||
     COALESCE(c.amount_total::TEXT, '0') || ',' ||
     '-,' ||
     '-,' ||
-    COALESCE(pm.name_en, pm.method_name, '') || ',' ||
-    COALESCE(c.gateway_name, '') || ',' ||
+    COALESCE(pm.name_en, '') || ',' ||
     '-'
   FROM credit_notes c
   LEFT JOIN payment_methods pm ON pm.id = c.payment_method_id
@@ -85,13 +81,12 @@ AS $$
         jsonb_build_object(
           'type', 'Invoice',
           'number', i.invoice_number,
-          'customer', i.partner_name,
-          'date', i.invoice_date,
+          'sale_date', i.sale_order_date,
+          'invoice_date', i.invoice_date,
           'amount_total', i.amount_total,
           'credits_applied', COALESCE(credits.total_credits, 0),
           'net_amount', i.amount_total - COALESCE(credits.total_credits, 0),
-          'payment_method', COALESCE(pm.name_en, pm.method_name),
-          'gateway', i.gateway_name,
+          'payment_method', pm.name_en,
           'has_credits', credits.total_credits > 0
         )
       )
@@ -112,11 +107,9 @@ AS $$
         jsonb_build_object(
           'type', 'Credit Note',
           'number', c.credit_note_number,
-          'customer', c.partner_name,
           'date', c.credit_date,
           'amount_total', c.amount_total,
-          'payment_method', COALESCE(pm.name_en, pm.method_name),
-          'gateway', c.gateway_name
+          'payment_method', pm.name_en
         )
       )
       FROM credit_notes c
