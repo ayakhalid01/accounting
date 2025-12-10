@@ -521,7 +521,7 @@ export default function UploadsPage() {
             }
           }
           
-          // Phase 1C: For credits, use database function to match all at once
+          // Phase 1C: For credits, use database function to match in batches
           if (type === 'credit' && creditsToMatch.length > 0) {
             console.log(`🔍 Matching ${creditsToMatch.length} credits using database function...`);
             console.log(`📊 Audit: Preparing ${creditsToMatch.length} credits for matching`);
@@ -535,24 +535,53 @@ export default function UploadsPage() {
               payment_method_id: c.payment_method_id ? c.payment_method_id.substring(0, 8) + '...' : 'null'
             })));
             
-            // Prepare credits array with UUIDs for the function
-            const creditsPayload = creditsToMatch.map((c, idx) => ({
-              id: `00000000-0000-0000-0000-${String(idx).padStart(12, '0')}`, // Temporary UUID
-              reference: c.reference,
-              payment_method_id: c.payment_method_id,
-              gateway_name: c.gateway_name
-            }));
+            // Split into batches to avoid statement timeout (5000 credits per batch)
+            const MATCH_BATCH_SIZE = 5000;
+            const totalMatchBatches = Math.ceil(creditsToMatch.length / MATCH_BATCH_SIZE);
+            const allMatches: any[] = [];
+            let matchError: any = null;
             
-            console.log(`🚀 Calling database function with ${creditsPayload.length} credits...`);
+            console.log(`🚀 Splitting into ${totalMatchBatches} batches (${MATCH_BATCH_SIZE} credits per batch)...`);
             
-            // Call database function to match all credits at once
-            const { data: matches, error: matchError } = await supabase.rpc(
-              'match_credits_to_invoices',
-              { p_credits: creditsPayload }
-            );
+            for (let batchIdx = 0; batchIdx < totalMatchBatches; batchIdx++) {
+              const batchStart = batchIdx * MATCH_BATCH_SIZE;
+              const batchEnd = Math.min(batchStart + MATCH_BATCH_SIZE, creditsToMatch.length);
+              const batchCredits = creditsToMatch.slice(batchStart, batchEnd);
+              
+              console.log(`📦 Matching batch ${batchIdx + 1}/${totalMatchBatches} (${batchCredits.length} credits)...`);
+              
+              // Prepare credits array with UUIDs for the function
+              const creditsPayload = batchCredits.map((c, idx) => ({
+                id: `00000000-0000-0000-0000-${String(batchStart + idx).padStart(12, '0')}`, // Global index
+                reference: c.reference,
+                payment_method_id: c.payment_method_id,
+                gateway_name: c.gateway_name
+              }));
+              
+              // Call database function for this batch
+              const { data: batchMatches, error: batchError } = await supabase.rpc(
+                'match_credits_to_invoices',
+                { p_credits: creditsPayload }
+              );
+              
+              if (batchError) {
+                console.error(`❌ Error in batch ${batchIdx + 1}:`, batchError.message);
+                matchError = batchError;
+                break; // Stop on first error
+              }
+              
+              if (batchMatches && batchMatches.length > 0) {
+                allMatches.push(...batchMatches);
+                console.log(`✅ Batch ${batchIdx + 1}: Found ${batchMatches.length} matches`);
+              } else {
+                console.log(`⚠️ Batch ${batchIdx + 1}: No matches found`);
+              }
+            }
             
             const matchTime = ((performance.now() - matchStartTime) / 1000).toFixed(2);
             console.log(`⏱️ Database function completed in ${matchTime}s`);
+            
+            const matches = allMatches;
             
             if (matchError) {
               console.error('❌ Error matching credits:', matchError);
@@ -623,7 +652,7 @@ export default function UploadsPage() {
             } else {
               console.warn('⚠️ No matches found from database function');
               console.log('📋 Database returned:', matches);
-              console.log('📊 Total credits sent:', creditsPayload.length);
+              console.log('📊 Total credits processed:', creditsToMatch.length);
               skippedCount = creditsToMatch.length;
             }
             
