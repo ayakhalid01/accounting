@@ -457,35 +457,31 @@ export default function UploadsPage() {
           if (type === 'credit') {
             console.log('📋 Pre-loading invoices for matching...');
             
-            // Fetch ALL invoices with pagination (Supabase default limit is 1000)
-            let allInvoices: any[] = [];
-            let page = 0;
-            const pageSize = 10000;
-            let hasMore = true;
+            // First get total count
+            const { count: totalCount } = await supabase
+              .from('invoices')
+              .select('*', { count: 'exact', head: true });
             
-            while (hasMore) {
+            console.log(`📊 Total invoices in database: ${totalCount}`);
+            
+            // Fetch ALL invoices with pagination (max 1000 per request in Supabase)
+            let allInvoices: any[] = [];
+            const pageSize = 1000; // Supabase max
+            const totalPages = Math.ceil((totalCount || 0) / pageSize);
+            
+            for (let page = 0; page < totalPages; page++) {
               const from = page * pageSize;
               const to = from + pageSize - 1;
               
-              const { data: batch, count } = await supabase
+              const { data: batch } = await supabase
                 .from('invoices')
-                .select('id, invoice_number, payment_method_id, payment_methods(name_en, code)', { count: 'exact' })
+                .select('id, invoice_number, payment_method_id, payment_methods(name_en, code)')
                 .range(from, to);
               
-              if (!batch || batch.length === 0) {
-                hasMore = false;
-                break;
-              }
+              if (!batch || batch.length === 0) break;
               
               allInvoices = allInvoices.concat(batch);
-              console.log(`📥 Loaded ${allInvoices.length} invoices so far...`);
-              
-              // Check if we got less than page size OR we reached the total count
-              if (batch.length < pageSize || (count && allInvoices.length >= count)) {
-                hasMore = false;
-              }
-              
-              page++;
+              console.log(`📥 Loaded ${allInvoices.length}/${totalCount} invoices...`);
             }
             
             if (allInvoices.length > 0) {
