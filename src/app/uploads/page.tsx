@@ -346,27 +346,16 @@ export default function UploadsPage() {
         
         console.log(`📊 Found ${beforeCount} existing ${type}s to delete`);
         
-        // Delete in batches to avoid timeout
-        const DELETE_BATCH_SIZE = 5000;
+        // Delete in small batches to avoid URL length limit and timeout
+        const DELETE_BATCH_SIZE = 1000;
         let totalDeleted = 0;
-        let hasMore = true;
         
-        while (hasMore && totalDeleted < (beforeCount || 0)) {
-          const { data: batch, error: fetchError } = await supabase
-            .from(table)
-            .select('id')
-            .limit(DELETE_BATCH_SIZE);
-          
-          if (fetchError || !batch || batch.length === 0) {
-            hasMore = false;
-            break;
-          }
-          
-          const ids = batch.map(r => r.id);
+        while (totalDeleted < (beforeCount || 0)) {
+          // Delete first N records (repeatedly delete the "first" batch)
           const { error: deleteError, count: deletedCount } = await supabase
             .from(table)
             .delete({ count: 'exact' })
-            .in('id', ids);
+            .limit(DELETE_BATCH_SIZE);
           
           if (deleteError) {
             console.error('❌ Error deleting batch:', deleteError);
@@ -374,12 +363,15 @@ export default function UploadsPage() {
             return;
           }
           
-          totalDeleted += deletedCount || batch.length;
+          if (!deletedCount || deletedCount === 0) {
+            break; // No more records to delete
+          }
+          
+          totalDeleted += deletedCount;
           console.log(`🗑️ Deleted ${totalDeleted}/${beforeCount} ${type}s...`);
           
-          if (batch.length < DELETE_BATCH_SIZE) {
-            hasMore = false;
-          }
+          // Small delay to avoid rate limits
+          await new Promise(resolve => setTimeout(resolve, 100));
         }
         
         console.log(`✅ Deleted ${totalDeleted} existing ${type}s`);
