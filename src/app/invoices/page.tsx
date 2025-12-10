@@ -1,0 +1,559 @@
+'use client';
+
+import { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
+import Navigation from '@/components/Navigation';
+import { auth } from '@/lib/supabase/auth';
+import { supabase } from '@/lib/supabase/client';
+import { Invoice, CreditNote } from '@/types';
+import { FileText, CreditCard, Calendar, DollarSign, Filter, Search, Download, ChevronDown, ChevronUp } from 'lucide-react';
+
+type DocumentType = 'all' | 'invoices' | 'credits';
+
+export default function InvoicesPage() {
+  const router = useRouter();
+  const [loading, setLoading] = useState(true);
+  const [invoices, setInvoices] = useState<Invoice[]>([]);
+  const [credits, setCredits] = useState<CreditNote[]>([]);
+  const [filteredData, setFilteredData] = useState<any[]>([]);
+  
+  // Filters
+  const [documentType, setDocumentType] = useState<DocumentType>('all');
+  const [searchTerm, setSearchTerm] = useState('');
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
+  const [selectedPaymentMethod, setSelectedPaymentMethod] = useState('all');
+  const [hasCreditsFilter, setHasCreditsFilter] = useState<'all' | 'with_credits' | 'no_credits'>('all');
+  const [paymentMethods, setPaymentMethods] = useState<any[]>([]);
+  
+  // Sort
+  const [sortField, setSortField] = useState<'sale_order_date' | 'amount_total'>('sale_order_date');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
+
+  useEffect(() => {
+    const init = async () => {
+      console.log('📄 [INVOICES] Checking authentication...');
+      const { session } = await auth.getSession();
+      
+      if (!session) {
+        console.log('❌ [INVOICES] No session, redirecting to login');
+        router.push('/login');
+        return;
+      }
+      
+      await Promise.all([
+        loadInvoices(),
+        loadCredits(),
+        loadPaymentMethods()
+      ]);
+      
+      setLoading(false);
+    };
+
+    init();
+  }, [router]);
+
+  useEffect(() => {
+    applyFilters();
+  }, [invoices, credits, documentType, searchTerm, startDate, endDate, selectedPaymentMethod, hasCreditsFilter, sortField, sortOrder]);
+
+  const loadInvoices = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('invoices')
+        .select(`
+          *,
+          payment_methods(id, name_en, name_ar, code)
+        `)
+        .order('sale_order_date', { ascending: false });
+
+      if (error) throw error;
+      setInvoices(data || []);
+      console.log('✅ Loaded invoices:', data?.length);
+    } catch (err: any) {
+      console.error('❌ Error loading invoices:', err);
+    }
+  };
+
+  const loadCredits = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('credit_notes')
+        .select(`
+          *,
+          payment_methods(id, name_en, name_ar, code)
+        `)
+        .order('sale_order_date', { ascending: false });
+
+      if (error) throw error;
+      setCredits(data || []);
+      console.log('✅ Loaded credits:', data?.length);
+    } catch (err: any) {
+      console.error('❌ Error loading credits:', err);
+    }
+  };
+
+  const loadPaymentMethods = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('payment_methods')
+        .select('*')
+        .eq('is_active', true)
+        .order('name_en');
+
+      if (error) throw error;
+      setPaymentMethods(data || []);
+    } catch (err: any) {
+      console.error('❌ Error loading payment methods:', err);
+    }
+  };
+
+  const applyFilters = () => {
+    let data: any[] = [];
+
+    // Filter by document type
+    if (documentType === 'all') {
+      data = [
+        ...invoices.map(inv => {
+          // Calculate credits for this invoice
+          const relatedCredits = credits.filter(cr => cr.original_invoice_id === inv.id);
+          const totalCredits = relatedCredits.reduce((sum, cr) => sum + cr.amount_total, 0);
+          const netAmount = inv.amount_total - totalCredits;
+          return { 
+            ...inv, 
+            type: 'invoice',
+            credits_applied: totalCredits,
+            net_amount: netAmount,
+            has_credits: totalCredits > 0
+          };
+        }),
+        ...credits.map(cr => ({ ...cr, type: 'credit', has_credits: false }))
+      ];
+    } else if (documentType === 'invoices') {
+      data = invoices.map(inv => {
+        // Calculate credits for this invoice
+        const relatedCredits = credits.filter(cr => cr.original_invoice_id === inv.id);
+        const totalCredits = relatedCredits.reduce((sum, cr) => sum + cr.amount_total, 0);
+        const netAmount = inv.amount_total - totalCredits;
+        return { 
+          ...inv, 
+          type: 'invoice',
+          credits_applied: totalCredits,
+          net_amount: netAmount,
+          has_credits: totalCredits > 0
+        };
+      });
+    } else {
+      data = credits.map(cr => ({ ...cr, type: 'credit', has_credits: false }));
+    }
+
+    // Search filter
+    if (searchTerm) {
+      data = data.filter(item => {
+        const number = item.type === 'invoice' ? item.invoice_number : item.credit_note_number;
+        const partner = item.partner_name?.toLowerCase() || '';
+        return number?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+               partner.includes(searchTerm.toLowerCase());
+      });
+    }
+
+    // Date range filter
+    if (startDate) {
+      data = data.filter(item => new Date(item.sale_order_date) >= new Date(startDate));
+    }
+    if (endDate) {
+      data = data.filter(item => new Date(item.sale_order_date) <= new Date(endDate));
+    }
+
+    // Payment method filter
+    if (selectedPaymentMethod !== 'all') {
+      data = data.filter(item => item.payment_method_id === selectedPaymentMethod);
+    }
+
+    // Credits filter (only for invoices)
+    if (hasCreditsFilter !== 'all' && documentType !== 'credits') {
+      if (hasCreditsFilter === 'with_credits') {
+        data = data.filter(item => item.type === 'invoice' && item.has_credits === true);
+      } else if (hasCreditsFilter === 'no_credits') {
+        data = data.filter(item => item.type === 'credit' || (item.type === 'invoice' && item.has_credits === false));
+      }
+    }
+
+    // Sort
+    data.sort((a, b) => {
+      let aVal, bVal;
+      
+      if (sortField === 'sale_order_date') {
+        aVal = new Date(a.sale_order_date).getTime();
+        bVal = new Date(b.sale_order_date).getTime();
+      } else {
+        aVal = a.amount_total;
+        bVal = b.amount_total;
+      }
+
+      return sortOrder === 'asc' ? aVal - bVal : bVal - aVal;
+    });
+
+    setFilteredData(data);
+  };
+
+  const toggleSort = (field: 'sale_order_date' | 'amount_total') => {
+    if (sortField === field) {
+      setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortField(field);
+      setSortOrder('desc');
+    }
+  };
+
+  const exportToCSV = () => {
+    // Match the exact table shown in UI
+    const headers = [
+      'Type',
+      'Number',
+      'Partner',
+      'Sale Order Date',
+      'Payment Method',
+      'Amount Total',
+      'Credits Applied',
+      'Net Amount',
+      'Status'
+    ];
+    
+    // Use the same filtered data shown in the table
+    const dataToExport = filteredData;
+    
+    const rows = dataToExport.map(item => {
+      const isInvoice = item.type === 'invoice';
+      const creditsApplied = isInvoice && item.credits_applied ? item.credits_applied : 0;
+      const netAmount = isInvoice && item.net_amount ? item.net_amount : item.amount_total;
+      
+      return [
+        isInvoice ? 'Invoice' : 'Credit',
+        isInvoice ? item.invoice_number : item.credit_note_number,
+        item.partner_name || 'Imported Customer',
+        new Date(item.sale_order_date).toLocaleDateString('en-GB'),
+        item.payment_methods?.name_en || '-',
+        `${item.amount_total.toFixed(2)} EGP`,
+        isInvoice ? (creditsApplied > 0 ? `(${creditsApplied.toFixed(2)}) EGP` : '-') : '-',
+        `${netAmount.toFixed(2)} EGP`,
+        item.state === 'posted' ? 'Posted' : item.state
+      ];
+    });
+
+    const csv = [headers, ...rows].map(row => row.join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const fileName = documentType === 'credits' ? 'Credits' : documentType === 'invoices' ? 'Invoices' : 'Documents';
+    a.download = `${fileName}_exported_${new Date().toISOString().split('T')[0]}.csv`;
+    a.click();
+  };
+
+  const totalInvoices = filteredData.filter(d => d.type === 'invoice').reduce((sum, i) => sum + i.amount_total, 0);
+  // Only count credits that are linked to invoices (have original_invoice_id)
+  const totalCredits = filteredData.filter(d => d.type === 'credit' && d.original_invoice_id).reduce((sum, c) => sum + c.amount_total, 0);
+  const netAmount = totalInvoices - totalCredits;
+
+  if (loading) {
+    return (
+      <div>
+        <Navigation />
+        <div className="flex items-center justify-center min-h-screen">
+          <div className="text-center">
+            <div className="inline-block h-12 w-12 animate-spin rounded-full border-4 border-solid border-primary-500 border-r-transparent"></div>
+            <p className="mt-4 text-gray-600">Loading...</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-gray-50">
+      <Navigation />
+      
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <div className="mb-8">
+          <h1 className="text-3xl font-bold text-gray-900">Invoices & Credit Notes</h1>
+          <p className="text-gray-600 mt-2">View and manage all imported documents</p>
+        </div>
+
+        {/* Summary Cards */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-gray-600">Total Invoices</p>
+                <p className="text-2xl font-bold text-green-600">
+                  {totalInvoices.toLocaleString()} EGP
+                </p>
+                <p className="text-xs text-gray-500 mt-1">
+                  {filteredData.filter(d => d.type === 'invoice').length} documents
+                </p>
+              </div>
+              <FileText className="h-12 w-12 text-green-600 opacity-20" />
+            </div>
+          </div>
+
+          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-gray-600">Total Credits</p>
+                <p className="text-2xl font-bold text-red-600">
+                  {totalCredits.toLocaleString()} EGP
+                </p>
+                <p className="text-xs text-gray-500 mt-1">
+                  {filteredData.filter(d => d.type === 'credit' && d.original_invoice_id).length} documents (linked to invoices)
+                </p>
+              </div>
+              <CreditCard className="h-12 w-12 text-red-600 opacity-20" />
+            </div>
+          </div>
+
+          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-gray-600">Net Amount</p>
+                <p className={`text-2xl font-bold ${netAmount >= 0 ? 'text-blue-600' : 'text-orange-600'}`}>
+                  {netAmount.toLocaleString()} EGP
+                </p>
+                <p className="text-xs text-gray-500 mt-1">
+                  {filteredData.length} total documents
+                </p>
+              </div>
+              <DollarSign className="h-12 w-12 text-blue-600 opacity-20" />
+            </div>
+          </div>
+        </div>
+
+        {/* Filters */}
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">
+          <div className="flex items-center gap-2 mb-4">
+            <Filter className="h-5 w-5 text-gray-600" />
+            <h2 className="text-lg font-semibold text-gray-900">Filters</h2>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+            {/* Document Type */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Type</label>
+              <select
+                value={documentType}
+                onChange={(e) => setDocumentType(e.target.value as DocumentType)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+              >
+                <option value="all">All Documents</option>
+                <option value="invoices">Invoices Only</option>
+                <option value="credits">Credits Only</option>
+              </select>
+            </div>
+
+            {/* Search */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Search</label>
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+                <input
+                  type="text"
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  placeholder="Number or partner..."
+                  className="w-full pl-10 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                />
+              </div>
+            </div>
+
+            {/* Start Date */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">From Date</label>
+              <input
+                type="date"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+              />
+            </div>
+
+            {/* End Date */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">To Date</label>
+              <input
+                type="date"
+                value={endDate}
+                onChange={(e) => setEndDate(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+              />
+            </div>
+
+            {/* Payment Method */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Payment Method</label>
+              <select
+                value={selectedPaymentMethod}
+                onChange={(e) => setSelectedPaymentMethod(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+              >
+                <option value="all">All Methods</option>
+                {paymentMethods.map(pm => (
+                  <option key={pm.id} value={pm.id}>{pm.name_en}</option>
+                ))}
+              </select>
+            </div>
+
+            {/* Credits Filter */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Credit Status</label>
+              <select
+                value={hasCreditsFilter}
+                onChange={(e) => setHasCreditsFilter(e.target.value as 'all' | 'with_credits' | 'no_credits')}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                disabled={documentType === 'credits'}
+              >
+                <option value="all">All Invoices</option>
+                <option value="with_credits">Has Credits</option>
+                <option value="no_credits">No Credits</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="flex justify-between items-center mt-4 pt-4 border-t border-gray-200">
+            <button
+              onClick={() => {
+                setSearchTerm('');
+                setStartDate('');
+                setEndDate('');
+                setSelectedPaymentMethod('all');
+                setDocumentType('all');
+                setHasCreditsFilter('all');
+              }}
+              className="text-sm text-gray-600 hover:text-gray-900"
+            >
+              Clear Filters
+            </button>
+            <button
+              onClick={exportToCSV}
+              className="flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700"
+            >
+              <Download className="h-4 w-4" />
+              Export CSV
+            </button>
+          </div>
+        </div>
+
+        {/* Data Table */}
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Type</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Number</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Partner</th>
+                  <th 
+                    className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100"
+                    onClick={() => toggleSort('sale_order_date')}
+                  >
+                    <div className="flex items-center gap-1">
+                      <Calendar className="h-4 w-4" />
+                      Sale Order Date
+                      {sortField === 'sale_order_date' && (
+                        sortOrder === 'asc' ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />
+                      )}
+                    </div>
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Payment Method</th>
+                  <th 
+                    className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase cursor-pointer hover:bg-gray-100"
+                    onClick={() => toggleSort('amount_total')}
+                  >
+                    <div className="flex items-center justify-end gap-1">
+                      Amount Total
+                      {sortField === 'amount_total' && (
+                        sortOrder === 'asc' ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />
+                      )}
+                    </div>
+                  </th>
+                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Credits Applied</th>
+                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Net Amount</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {filteredData.length === 0 ? (
+                  <tr>
+                    <td colSpan={9} className="px-6 py-12 text-center text-gray-500">
+                      <FileText className="mx-auto h-12 w-12 text-gray-300 mb-2" />
+                      <p>No documents found</p>
+                      <p className="text-sm mt-1">Try adjusting your filters</p>
+                    </td>
+                  </tr>
+                ) : (
+                  filteredData.map((item, idx) => (
+                    <tr key={idx} className="hover:bg-gray-50">
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <div className="flex items-center gap-2">
+                          <span className={`inline-flex px-2 py-1 text-xs font-medium rounded-full ${
+                            item.type === 'invoice' 
+                              ? 'bg-green-100 text-green-800' 
+                              : 'bg-red-100 text-red-800'
+                          }`}>
+                            {item.type === 'invoice' ? 'Invoice' : 'Credit'}
+                          </span>
+                          {item.type === 'invoice' && item.has_credits && (
+                            <span className="inline-flex items-center px-2 py-1 text-xs font-medium rounded-full bg-orange-100 text-orange-800" title="Has credits applied">
+                              🏴 Credits
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                        {item.type === 'invoice' ? item.invoice_number : item.credit_note_number}
+                      </td>
+                      <td className="px-6 py-4 text-sm text-gray-900">
+                        {item.partner_name}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                        {new Date(item.sale_order_date).toLocaleDateString()}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                        {item.payment_methods?.name_en || 'N/A'}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-right font-medium text-gray-900">
+                        {item.amount_total.toLocaleString()} EGP
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-right font-medium text-red-600">
+                        {item.type === 'invoice' && item.credits_applied > 0 ? (
+                          `(${item.credits_applied.toLocaleString()}) EGP`
+                        ) : (
+                          <span className="text-gray-400">-</span>
+                        )}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-right font-bold text-blue-600">
+                        {item.type === 'invoice' && item.credits_applied > 0 ? (
+                          `${item.net_amount.toLocaleString()} EGP`
+                        ) : (
+                          <span className="text-gray-400">-</span>
+                        )}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <span className={`inline-flex px-2 py-1 text-xs font-medium rounded-full ${
+                          item.state === 'posted' 
+                            ? 'bg-blue-100 text-blue-800' 
+                            : 'bg-gray-100 text-gray-800'
+                        }`}>
+                          {item.state}
+                        </span>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </main>
+    </div>
+  );
+}
