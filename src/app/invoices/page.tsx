@@ -360,20 +360,21 @@ export default function InvoicesPage() {
       console.log('📥 [CSV] Generating CSV on server...');
       setLoading(true);
 
-      // Call database function to generate CSV (NO loading in frontend!)
+      // Call database function - returns ONE text string with ALL data
       const { data, error } = await supabase.rpc('export_invoices_csv');
 
       if (error) throw error;
 
-      if (!data || data.length === 0) {
+      if (!data) {
         console.error('❌ [CSV] No data returned');
         alert('No data to export');
         setLoading(false);
         return;
       }
 
-      // Data is already CSV format from database!
-      const csvContent = data.map((row: any) => row.csv_line).join('\n');
+      // Data is complete CSV text (not array!)
+      const csvContent = data;
+      const lineCount = csvContent.split('\n').length - 1; // -1 for header
 
       // Download
       const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
@@ -382,7 +383,7 @@ export default function InvoicesPage() {
       link.download = `all_invoices_credits_${new Date().toISOString().split('T')[0]}.csv`;
       link.click();
 
-      console.log(`✅ [CSV] Downloaded ${data.length - 1} records (from server)`);
+      console.log(`✅ [CSV] Downloaded ${lineCount.toLocaleString()} records (server-generated)`);
       setLoading(false);
     } catch (error) {
       console.error('❌ [CSV] Error:', error);
