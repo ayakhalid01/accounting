@@ -459,22 +459,33 @@ export default function UploadsPage() {
             
             // Fetch ALL invoices with pagination (Supabase default limit is 1000)
             let allInvoices: any[] = [];
-            let from = 0;
-            const pageSize = 5000;
+            let page = 0;
+            const pageSize = 10000;
+            let hasMore = true;
             
-            while (true) {
-              const { data: batch } = await supabase
-                .from('invoices')
-                .select('id, invoice_number, payment_method_id, payment_methods(name_en, code)')
-                .range(from, from + pageSize - 1);
+            while (hasMore) {
+              const from = page * pageSize;
+              const to = from + pageSize - 1;
               
-              if (!batch || batch.length === 0) break;
+              const { data: batch, count } = await supabase
+                .from('invoices')
+                .select('id, invoice_number, payment_method_id, payment_methods(name_en, code)', { count: 'exact' })
+                .range(from, to);
+              
+              if (!batch || batch.length === 0) {
+                hasMore = false;
+                break;
+              }
               
               allInvoices = allInvoices.concat(batch);
               console.log(`📥 Loaded ${allInvoices.length} invoices so far...`);
               
-              if (batch.length < pageSize) break; // Last page
-              from += pageSize;
+              // Check if we got less than page size OR we reached the total count
+              if (batch.length < pageSize || (count && allInvoices.length >= count)) {
+                hasMore = false;
+              }
+              
+              page++;
             }
             
             if (allInvoices.length > 0) {
