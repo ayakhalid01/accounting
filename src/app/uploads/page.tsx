@@ -109,7 +109,7 @@ export default function UploadsPage() {
         .from('upload_history')
         .select('*')
         .order('created_at', { ascending: false })
-        .limit(50);
+        .limit(5); // Only show last 5 uploads
 
       if (error) {
         console.error('❌ Error loading history:', error);
@@ -716,7 +716,7 @@ export default function UploadsPage() {
             setCreditBatchProgress(null);
           }
 
-          // Save upload history
+          // Save upload history and keep only last 5
           await supabase.from('upload_history').insert({
             file_name: file.name,
             import_type: type === 'invoice' ? 'invoices' : 'credits',
@@ -725,6 +725,22 @@ export default function UploadsPage() {
             error_count: errors.length,
             uploaded_by: session.user.id,
           });
+          
+          // Clean up old history - keep only last 5 per user
+          const { data: allHistory } = await supabase
+            .from('upload_history')
+            .select('id')
+            .eq('uploaded_by', session.user.id)
+            .order('created_at', { ascending: false });
+          
+          if (allHistory && allHistory.length > 5) {
+            const idsToDelete = allHistory.slice(5).map(h => h.id);
+            await supabase
+              .from('upload_history')
+              .delete()
+              .in('id', idsToDelete);
+            console.log(`🗑️ Cleaned up ${idsToDelete.length} old history records`);
+          }
 
           if (errors.length > 0) {
             setError(`Imported ${successCount} ${type}s with ${errors.length} errors. Check console.`);
