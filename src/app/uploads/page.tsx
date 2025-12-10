@@ -351,27 +351,39 @@ export default function UploadsPage() {
         let totalDeleted = 0;
         
         while (totalDeleted < (beforeCount || 0)) {
-          // Delete first N records (repeatedly delete the "first" batch)
-          const { error: deleteError, count: deletedCount } = await supabase
+          // Get batch of IDs to delete
+          const { data: batch } = await supabase
             .from(table)
-            .delete({ count: 'exact' })
+            .select('id')
             .limit(DELETE_BATCH_SIZE);
           
-          if (deleteError) {
-            console.error('❌ Error deleting batch:', deleteError);
-            setError(`Failed to delete existing ${type}s: ${deleteError.message}`);
-            return;
+          if (!batch || batch.length === 0) {
+            break; // No more records
           }
           
-          if (!deletedCount || deletedCount === 0) {
-            break; // No more records to delete
+          // Delete using RPC or direct query (to avoid URL length limit, delete in smaller chunks)
+          const chunkSize = 100;
+          for (let i = 0; i < batch.length; i += chunkSize) {
+            const chunk = batch.slice(i, i + chunkSize);
+            const ids = chunk.map(r => r.id);
+            
+            const { error: deleteError } = await supabase
+              .from(table)
+              .delete()
+              .in('id', ids);
+            
+            if (deleteError) {
+              console.error('❌ Error deleting chunk:', deleteError);
+              setError(`Failed to delete existing ${type}s: ${deleteError.message}`);
+              return;
+            }
+            
+            totalDeleted += chunk.length;
+            console.log(`🗑️ Deleted ${totalDeleted}/${beforeCount} ${type}s...`);
           }
-          
-          totalDeleted += deletedCount;
-          console.log(`🗑️ Deleted ${totalDeleted}/${beforeCount} ${type}s...`);
           
           // Small delay to avoid rate limits
-          await new Promise(resolve => setTimeout(resolve, 100));
+          await new Promise(resolve => setTimeout(resolve, 50));
         }
         
         console.log(`✅ Deleted ${totalDeleted} existing ${type}s`);
