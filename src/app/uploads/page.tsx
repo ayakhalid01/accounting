@@ -559,11 +559,14 @@ export default function UploadsPage() {
               }));
               
               // Call database function for this batch
-              // Note: Override PostgREST default 1000 row limit - set to 100K to ensure all results
-              console.log(`🔧 Calling RPC with limit override for batch ${batchIdx + 1}...`);
+              // WORKAROUND: Use range(0, 99999) instead of limit() to bypass PostgREST default limit
+              console.log(`🔧 Calling RPC for batch ${batchIdx + 1} with ${creditsPayload.length} credits...`);
+              
               const { data: batchMatches, error: batchError } = await supabase
                 .rpc('match_credits_to_invoices', { p_credits: creditsPayload })
-                .limit(100000); // Set high limit to get ALL matches (PostgREST default is 1000)
+                .range(0, 99999); // Use range instead of limit to get all results
+              
+              console.log(`📊 Batch ${batchIdx + 1} response: ${batchMatches?.length || 0} matches returned`);
               
               if (batchError) {
                 console.error(`❌ Error in batch ${batchIdx + 1}:`, batchError.message);
@@ -573,7 +576,13 @@ export default function UploadsPage() {
               
               if (batchMatches && batchMatches.length > 0) {
                 allMatches.push(...batchMatches);
-                console.log(`✅ Batch ${batchIdx + 1}: Found ${batchMatches.length} matches`);
+                console.log(`✅ Batch ${batchIdx + 1}: Found ${batchMatches.length} matches out of ${creditsPayload.length} credits`);
+                
+                // Check if we hit a limit
+                if (batchMatches.length === 1000) {
+                  console.warn(`⚠️ WARNING: Batch ${batchIdx + 1} returned EXACTLY 1000 - PostgREST limit still active!`);
+                  console.warn(`💡 This means only 1000/${creditsPayload.length} potential matches were checked`);
+                }
               } else {
                 console.log(`⚠️ Batch ${batchIdx + 1}: No matches found`);
               }
