@@ -26,8 +26,8 @@ BEGIN
   SELECT 
     'Invoice,' ||
     COALESCE(i.invoice_number, '') || ',' ||
-    COALESCE(i.customer_name, i.partner_name, '') || ',' ||
-    TO_CHAR(i.sale_order_date, 'DD/MM/YYYY') || ',' ||
+    COALESCE(i.partner_name, '') || ',' ||
+    TO_CHAR(i.invoice_date, 'DD/MM/YYYY') || ',' ||
     COALESCE(i.amount_total::TEXT, '0') || ',' ||
     COALESCE(credits.total_credits::TEXT, '0') || ',' ||
     COALESCE((i.amount_total - COALESCE(credits.total_credits, 0))::TEXT, '0') || ',' ||
@@ -45,14 +45,14 @@ BEGIN
   ) credits ON credits.original_invoice_id = i.id
   LEFT JOIN payment_methods pm ON pm.id = i.payment_method_id
   WHERE i.imported_by = auth.uid()
-  ORDER BY i.sale_order_date DESC;
+  ORDER BY i.invoice_date DESC;
   
   -- Return credit note rows
   RETURN QUERY
   SELECT 
     'Credit Note,' ||
     COALESCE(c.credit_note_number, '') || ',' ||
-    COALESCE(c.customer_name, c.partner_name, '') || ',' ||
+    COALESCE(c.partner_name, '') || ',' ||
     TO_CHAR(c.credit_date, 'DD/MM/YYYY') || ',' ||
     COALESCE(c.amount_total::TEXT, '0') || ',' ||
     '-,' ||
@@ -85,12 +85,12 @@ AS $$
         jsonb_build_object(
           'type', 'Invoice',
           'number', i.invoice_number,
-          'customer', COALESCE(i.customer_name, i.partner_name),
-          'date', i.sale_order_date,
+          'customer', i.partner_name,
+          'date', i.invoice_date,
           'amount_total', i.amount_total,
           'credits_applied', COALESCE(credits.total_credits, 0),
           'net_amount', i.amount_total - COALESCE(credits.total_credits, 0),
-          'payment_method', pm.method_name,
+          'payment_method', COALESCE(pm.name_en, pm.method_name),
           'gateway', i.gateway_name,
           'has_credits', credits.total_credits > 0
         )
@@ -112,7 +112,7 @@ AS $$
         jsonb_build_object(
           'type', 'Credit Note',
           'number', c.credit_note_number,
-          'customer', COALESCE(c.customer_name, c.partner_name),
+          'customer', c.partner_name,
           'date', c.credit_date,
           'amount_total', c.amount_total,
           'payment_method', COALESCE(pm.name_en, pm.method_name),
