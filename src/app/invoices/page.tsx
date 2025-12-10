@@ -353,155 +353,27 @@ export default function InvoicesPage() {
   };
 
   // ============================================
-  // Download ALL Data as CSV (not just current page)
+  // Download ALL Data as CSV (SERVER-SIDE - Much Better!)
   // ============================================
   const downloadAllDataAsCSV = async () => {
     try {
-      console.log('📥 [CSV] Downloading ALL data...');
+      console.log('📥 [CSV] Generating CSV on server...');
       setLoading(true);
 
-      // ============================================
-      // Load ALL Invoices (Bypass 1000 limit with batches)
-      // ============================================
-      const BATCH_SIZE = 1000;
-      const PARALLEL_BATCHES = 5;
-      let allInvoices: Invoice[] = [];
-      let offset = 0;
-      let hasMoreInvoices = true;
+      // Call database function to generate CSV (NO loading in frontend!)
+      const { data, error } = await supabase.rpc('export_invoices_csv');
 
-      console.log('📥 [CSV] Loading ALL invoices...');
-      while (hasMoreInvoices) {
-        const promises = [];
-        
-        for (let i = 0; i < PARALLEL_BATCHES; i++) {
-          const currentOffset = offset + (i * BATCH_SIZE);
-          promises.push(
-            supabase
-              .from('invoices')
-              .select('*')
-              .order('sale_order_date', { ascending: false })
-              .range(currentOffset, currentOffset + BATCH_SIZE - 1)
-          );
-        }
+      if (error) throw error;
 
-        const results = await Promise.all(promises);
-        let batchData: Invoice[] = [];
-        
-        for (const result of results) {
-          if (result.error) throw result.error;
-          if (result.data) {
-            batchData = [...batchData, ...result.data];
-          }
-        }
-
-        if (batchData.length === 0) {
-          hasMoreInvoices = false;
-        } else {
-          allInvoices.push(...batchData);
-          offset += BATCH_SIZE * PARALLEL_BATCHES;
-          console.log(`📥 [CSV] Loaded ${allInvoices.length} invoices...`);
-          
-          if (batchData.length < BATCH_SIZE * PARALLEL_BATCHES) {
-            hasMoreInvoices = false;
-          }
-        }
+      if (!data || data.length === 0) {
+        console.error('❌ [CSV] No data returned');
+        alert('No data to export');
+        setLoading(false);
+        return;
       }
 
-      // ============================================
-      // Load ALL Credits (Bypass 1000 limit with batches)
-      // ============================================
-      let allCredits: CreditNote[] = [];
-      offset = 0;
-      let hasMoreCredits = true;
-
-      console.log('📥 [CSV] Loading ALL credits...');
-      while (hasMoreCredits) {
-        const promises = [];
-        
-        for (let i = 0; i < PARALLEL_BATCHES; i++) {
-          const currentOffset = offset + (i * BATCH_SIZE);
-          promises.push(
-            supabase
-              .from('credit_notes')
-              .select('*')
-              .not('original_invoice_id', 'is', null)
-              .order('credit_date', { ascending: false })
-              .range(currentOffset, currentOffset + BATCH_SIZE - 1)
-          );
-        }
-
-        const results = await Promise.all(promises);
-        let batchData: CreditNote[] = [];
-        
-        for (const result of results) {
-          if (result.error) throw result.error;
-          if (result.data) {
-            batchData = [...batchData, ...result.data];
-          }
-        }
-
-        if (batchData.length === 0) {
-          hasMoreCredits = false;
-        } else {
-          allCredits.push(...batchData);
-          offset += BATCH_SIZE * PARALLEL_BATCHES;
-          console.log(`📥 [CSV] Loaded ${allCredits.length} credits...`);
-          
-          if (batchData.length < BATCH_SIZE * PARALLEL_BATCHES) {
-            hasMoreCredits = false;
-          }
-        }
-      }
-
-      console.log(`✅ [CSV] Total loaded: ${allInvoices.length} invoices + ${allCredits.length} credits`);
-
-      // Build credits map for invoices
-      const creditsMap = new Map<string, number>();
-      allCredits.forEach(cr => {
-        if (cr.original_invoice_id) {
-          const current = creditsMap.get(cr.original_invoice_id) || 0;
-          creditsMap.set(cr.original_invoice_id, current + cr.amount_total);
-        }
-      });
-
-      // Combine all data
-      const allData = [
-        ...allInvoices.map((inv: any) => {
-          const creditsApplied = creditsMap.get(inv.id) || 0;
-          const netAmount = inv.amount_total - creditsApplied;
-          return {
-            Type: 'Invoice',
-            Number: inv.invoice_number,
-            Customer: inv.customer_name || inv.partner_name || '',
-            Date: new Date(inv.sale_order_date).toLocaleDateString(),
-            'Amount Total': inv.amount_total,
-            'Credits Applied': creditsApplied > 0 ? creditsApplied : 0,
-            'Net Amount': netAmount,
-            'Payment Method': paymentMethods.find(m => m.id === inv.payment_method_id)?.method_name || '',
-            Gateway: inv.gateway_name || '',
-            'Has Credits': creditsApplied > 0 ? 'Yes' : 'No'
-          };
-        }),
-        ...allCredits.map((cr: any) => ({
-          Type: 'Credit Note',
-          Number: cr.credit_note_number,
-          Customer: cr.customer_name || cr.partner_name || '',
-          Date: new Date(cr.credit_date).toLocaleDateString(),
-          'Amount Total': cr.amount_total,
-          'Credits Applied': '-',
-          'Net Amount': '-',
-          'Payment Method': paymentMethods.find(m => m.id === cr.payment_method_id)?.method_name || '',
-          Gateway: cr.gateway_name || '',
-          'Has Credits': '-'
-        }))
-      ];
-
-      // Convert to CSV
-      const headers = Object.keys(allData[0]);
-      const csvContent = [
-        headers.join(','),
-        ...allData.map(row => headers.map(h => `"${(row as any)[h]}"`).join(','))
-      ].join('\n');
+      // Data is already CSV format from database!
+      const csvContent = data.map((row: any) => row.csv_line).join('\n');
 
       // Download
       const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
@@ -510,10 +382,11 @@ export default function InvoicesPage() {
       link.download = `all_invoices_credits_${new Date().toISOString().split('T')[0]}.csv`;
       link.click();
 
-      console.log(`✅ [CSV] Downloaded ${allData.length} records`);
+      console.log(`✅ [CSV] Downloaded ${data.length - 1} records (from server)`);
       setLoading(false);
     } catch (error) {
       console.error('❌ [CSV] Error:', error);
+      alert('Error downloading CSV. Please try again.');
       setLoading(false);
     }
   };
