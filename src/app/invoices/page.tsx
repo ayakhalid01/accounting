@@ -327,6 +327,70 @@ export default function InvoicesPage() {
   };
 
   // ============================================
+  // Download ALL Data as CSV (not just current page)
+  // ============================================
+  const downloadAllDataAsCSV = async () => {
+    try {
+      console.log('📥 [CSV] Downloading ALL data...');
+      setLoading(true);
+
+      // Load ALL invoices and credits (no pagination)
+      const [allInvoicesRes, allCreditsRes] = await Promise.all([
+        supabase.from('invoices').select('*').order('sale_order_date', { ascending: false }),
+        supabase.from('credit_notes').select('*').not('original_invoice_id', 'is', null).order('credit_date', { ascending: false })
+      ]);
+
+      if (allInvoicesRes.error) throw allInvoicesRes.error;
+      if (allCreditsRes.error) throw allCreditsRes.error;
+
+      const allInvoices = allInvoicesRes.data || [];
+      const allCredits = allCreditsRes.data || [];
+
+      // Combine all data
+      const allData = [
+        ...allInvoices.map(inv => ({
+          Type: 'Invoice',
+          Number: inv.invoice_number,
+          Customer: inv.customer_name || '',
+          Date: new Date(inv.sale_order_date).toLocaleDateString(),
+          Amount: inv.amount_total,
+          PaymentMethod: paymentMethods.find(m => m.id === inv.payment_method_id)?.method_name || '',
+          Gateway: inv.gateway_name || ''
+        })),
+        ...allCredits.map(cr => ({
+          Type: 'Credit Note',
+          Number: cr.credit_note_number,
+          Customer: cr.customer_name || '',
+          Date: new Date(cr.credit_date).toLocaleDateString(),
+          Amount: cr.amount_total,
+          PaymentMethod: paymentMethods.find(m => m.id === cr.payment_method_id)?.method_name || '',
+          Gateway: cr.gateway_name || ''
+        }))
+      ];
+
+      // Convert to CSV
+      const headers = Object.keys(allData[0]);
+      const csvContent = [
+        headers.join(','),
+        ...allData.map(row => headers.map(h => `"${row[h]}"`).join(','))
+      ].join('\n');
+
+      // Download
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = `all_invoices_credits_${new Date().toISOString().split('T')[0]}.csv`;
+      link.click();
+
+      console.log(`✅ [CSV] Downloaded ${allData.length} records`);
+      setLoading(false);
+    } catch (error) {
+      console.error('❌ [CSV] Error:', error);
+      setLoading(false);
+    }
+  };
+
+  // ============================================
   // Statistics Cards (From Database View)
   // ============================================
   const statsCards = [
@@ -357,14 +421,14 @@ export default function InvoicesPage() {
   // Render
   // ============================================
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 dark:from-slate-950 dark:to-slate-900">
+    <div className="min-h-screen bg-gray-50">
       <Navigation />
       
       <div className="container mx-auto px-4 py-8">
         {/* Header */}
         <div className="mb-6">
           <h1 className="text-3xl font-bold mb-2">Invoices & Credit Notes</h1>
-          <p className="text-slate-600 dark:text-slate-400">
+          <p className="text-gray-600">
             View and manage your documents
             {statistics && (
               <span className="ml-2 text-xs">
@@ -377,31 +441,39 @@ export default function InvoicesPage() {
         {/* Statistics Cards */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
           {statsCards.map((stat, index) => (
-            <div key={index} className="bg-white dark:bg-slate-800 rounded-lg p-6 shadow-sm border border-slate-200 dark:border-slate-700">
+            <div key={index} className="bg-white rounded-lg p-6 shadow-sm border border-gray-200">
               <div className="flex items-center justify-between mb-4">
                 <div>
-                  <p className="text-sm text-slate-600 dark:text-slate-400 mb-1">{stat.title}</p>
+                  <p className="text-sm text-gray-600 mb-1">{stat.title}</p>
                   <p className="text-2xl font-bold">{stat.value}</p>
                 </div>
                 <stat.icon className={`w-8 h-8 ${stat.color}`} />
               </div>
-              <p className="text-sm text-slate-500">{stat.amount}</p>
+              <p className="text-sm text-gray-500">{stat.amount}</p>
             </div>
           ))}
         </div>
 
-        {/* Refresh Button */}
-        <div className="mb-4">
+        {/* Action Buttons */}
+        <div className="mb-4 flex gap-3">
           <button
             onClick={refreshStatistics}
-            className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
+            className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors flex items-center gap-2"
           >
             🔄 Refresh Statistics
+          </button>
+          <button
+            onClick={downloadAllDataAsCSV}
+            disabled={loading}
+            className="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <Download className="w-4 h-4" />
+            Download All Data (CSV)
           </button>
         </div>
 
         {/* Filters */}
-        <div className="bg-white dark:bg-slate-800 rounded-lg p-4 shadow-sm border border-slate-200 dark:border-slate-700 mb-6">
+        <div className="bg-white rounded-lg p-4 shadow-sm border border-gray-200 mb-6">
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
             {/* Document Type */}
             <div>
@@ -412,7 +484,7 @@ export default function InvoicesPage() {
                   setDocumentType(e.target.value as DocumentType);
                   setCurrentPage(1);
                 }}
-                className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700"
+                className="w-full px-3 py-2 rounded-lg border border-gray-300 bg-white"
               >
                 <option value="all">All Documents</option>
                 <option value="invoices">Invoices Only</option>
@@ -428,7 +500,7 @@ export default function InvoicesPage() {
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 placeholder="Search by number or customer..."
-                className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700"
+                className="w-full px-3 py-2 rounded-lg border border-gray-300 bg-white"
               />
             </div>
 
@@ -438,7 +510,7 @@ export default function InvoicesPage() {
               <select
                 value={selectedPaymentMethod}
                 onChange={(e) => setSelectedPaymentMethod(e.target.value)}
-                className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700"
+                className="w-full px-3 py-2 rounded-lg border border-gray-300 bg-white"
               >
                 <option value="all">All Methods</option>
                 {paymentMethods.map((method) => (
@@ -455,7 +527,7 @@ export default function InvoicesPage() {
               <select
                 value={hasCreditsFilter}
                 onChange={(e) => setHasCreditsFilter(e.target.value as any)}
-                className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700"
+                className="w-full px-3 py-2 rounded-lg border border-gray-300 bg-white"
               >
                 <option value="all">All Invoices</option>
                 <option value="with_credits">With Credits</option>
@@ -466,13 +538,36 @@ export default function InvoicesPage() {
         </div>
 
         {/* Data Table */}
-        <div className="bg-white dark:bg-slate-800 rounded-lg shadow-sm border border-slate-200 dark:border-slate-700">
-          <div className="p-4 border-b border-slate-200 dark:border-slate-700">
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200">
+          {/* Pagination - TOP */}
+          <div className="p-4 border-b border-gray-200 flex items-center justify-between">
+            <div className="text-sm text-gray-600">
+              Page {currentPage} of {totalPages} • {filteredData.length} items on this page
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                disabled={currentPage === 1 || loading}
+                className="px-4 py-2 rounded-lg bg-gray-100 hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                ← Previous
+              </button>
+              <button
+                onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                disabled={currentPage >= totalPages || loading}
+                className="px-4 py-2 rounded-lg bg-gray-100 hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                Next →
+              </button>
+            </div>
+          </div>
+
+          <div className="p-4 border-b border-gray-200">
             <div className="flex items-center justify-between">
               <h2 className="text-xl font-semibold">
                 Documents (Page {currentPage} / {totalPages})
               </h2>
-              <div className="text-sm text-slate-600">
+              <div className="text-sm text-gray-600">
                 Showing {filteredData.length} items on this page
               </div>
             </div>
@@ -481,12 +576,12 @@ export default function InvoicesPage() {
           {loading ? (
             <div className="p-12 text-center">
               <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto"></div>
-              <p className="mt-4 text-slate-600">Loading page {currentPage}...</p>
+              <p className="mt-4 text-gray-600">Loading page {currentPage}...</p>
             </div>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full">
-                <thead className="bg-slate-50 dark:bg-slate-900">
+                <thead className="bg-gray-50">
                   <tr>
                     <th className="px-4 py-3 text-left text-sm font-medium">Type</th>
                     <th className="px-4 py-3 text-left text-sm font-medium">Number</th>
@@ -496,21 +591,21 @@ export default function InvoicesPage() {
                     <th className="px-4 py-3 text-left text-sm font-medium">Payment Method</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
+                <tbody className="divide-y divide-gray-200">
                   {filteredData.map((item, index) => (
-                    <tr key={`${item.type}-${item.id}-${index}`} className="hover:bg-slate-50 dark:hover:bg-slate-900/50">
+                    <tr key={`${item.type}-${item.id}-${index}`} className="hover:bg-gray-50">
                       <td className="px-4 py-3">
                         <span className={`px-2 py-1 rounded text-xs font-medium ${
                           item.type === 'invoice' 
-                            ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
-                            : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
+                            ? 'bg-blue-100 text-blue-700'
+                            : 'bg-red-100 text-red-700'
                         }`}>
                           {item.type === 'invoice' ? 'Invoice' : 'Credit'}
                         </span>
                       </td>
                       <td className="px-4 py-3 font-mono text-sm">{item.number}</td>
                       <td className="px-4 py-3">{item.customer_name || '-'}</td>
-                      <td className="px-4 py-3 text-sm text-slate-600">
+                      <td className="px-4 py-3 text-sm text-gray-600">
                         {new Date(item.date).toLocaleDateString()}
                       </td>
                       <td className="px-4 py-3 text-right font-medium">
@@ -526,23 +621,23 @@ export default function InvoicesPage() {
             </div>
           )}
 
-          {/* Pagination */}
-          <div className="p-4 border-t border-slate-200 dark:border-slate-700 flex items-center justify-between">
-            <div className="text-sm text-slate-600">
+          {/* Pagination - BOTTOM (duplicate for convenience) */}
+          <div className="p-4 border-t border-gray-200 flex items-center justify-between">
+            <div className="text-sm text-gray-600">
               Page {currentPage} of {totalPages} • {filteredData.length} items on this page
             </div>
             <div className="flex gap-2">
               <button
                 onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
                 disabled={currentPage === 1 || loading}
-                className="px-4 py-2 rounded-lg bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                className="px-4 py-2 rounded-lg bg-gray-100 hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
                 ← Previous
               </button>
               <button
                 onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
                 disabled={currentPage >= totalPages || loading}
-                className="px-4 py-2 rounded-lg bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                className="px-4 py-2 rounded-lg bg-gray-100 hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
                 Next →
               </button>
