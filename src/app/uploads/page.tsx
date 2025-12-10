@@ -559,10 +559,11 @@ export default function UploadsPage() {
               }));
               
               // Call database function for this batch
-              // Note: Use .limit(10000) to override PostgREST default 1000 row limit
+              // Note: Override PostgREST default 1000 row limit - set to 100K to ensure all results
+              console.log(`🔧 Calling RPC with limit override for batch ${batchIdx + 1}...`);
               const { data: batchMatches, error: batchError } = await supabase
                 .rpc('match_credits_to_invoices', { p_credits: creditsPayload })
-                .limit(10000); // Allow up to 10K matches per batch (batch is 5K credits max)
+                .limit(100000); // Set high limit to get ALL matches (PostgREST default is 1000)
               
               if (batchError) {
                 console.error(`❌ Error in batch ${batchIdx + 1}:`, batchError.message);
