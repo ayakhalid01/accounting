@@ -647,39 +647,67 @@ export default function UploadsPage() {
             }
           }
 
-          // Phase 2: Batch insert (2000 at a time)
+          // Phase 2: Parallel batch insert (faster!)
           const BATCH_SIZE = 2000;
+          const PARALLEL_BATCHES = 5; // Insert 5 batches simultaneously
           const totalBatches = Math.ceil(recordsToInsert.length / BATCH_SIZE);
-          console.log(`⚡ Batch inserting ${recordsToInsert.length} records (${BATCH_SIZE} per batch)...`);
+          console.log(`⚡ Batch inserting ${recordsToInsert.length} records (${BATCH_SIZE} per batch, ${PARALLEL_BATCHES} parallel)...`);
           
-          for (let i = 0; i < recordsToInsert.length; i += BATCH_SIZE) {
-            const batch = recordsToInsert.slice(i, i + BATCH_SIZE);
-            const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+          const insertStartTime = performance.now();
+          
+          // Process batches in parallel groups
+          for (let i = 0; i < totalBatches; i += PARALLEL_BATCHES) {
+            const promises = [];
+            const batchInfos: { batchNum: number; size: number }[] = [];
             
-            // Update progress on button
+            // Prepare parallel batch requests
+            for (let j = 0; j < PARALLEL_BATCHES && (i + j) < totalBatches; j++) {
+              const batchIndex = i + j;
+              const start = batchIndex * BATCH_SIZE;
+              const batch = recordsToInsert.slice(start, start + BATCH_SIZE);
+              const batchNum = batchIndex + 1;
+              
+              batchInfos.push({ batchNum, size: batch.length });
+              
+              promises.push(
+                supabase
+                  .from(table)
+                  .upsert(batch, { 
+                    onConflict: numberField,
+                    ignoreDuplicates: false 
+                  })
+              );
+            }
+            
+            // Update progress
+            const currentBatch = i + PARALLEL_BATCHES;
             if (type === 'invoice') {
-              setInvoiceBatchProgress({ current: batchNum, total: totalBatches });
+              setInvoiceBatchProgress({ current: Math.min(currentBatch, totalBatches), total: totalBatches });
             } else {
-              setCreditBatchProgress({ current: batchNum, total: totalBatches });
+              setCreditBatchProgress({ current: Math.min(currentBatch, totalBatches), total: totalBatches });
             }
             
-            console.log(`📦 Batch ${batchNum}/${totalBatches} (${batch.length} records)...`);
+            console.log(`📦 Processing batches ${i + 1}-${Math.min(i + PARALLEL_BATCHES, totalBatches)}/${totalBatches}...`);
             
-            const { error: batchError } = await supabase
-              .from(table)
-              .upsert(batch, { 
-                onConflict: numberField,
-                ignoreDuplicates: false 
-              });
-
-            if (batchError) {
-              console.error(`❌ Batch ${batchNum} error:`, batchError);
-              errors.push(`Batch ${batchNum}: ${batchError.message}`);
-            } else {
-              successCount += batch.length;
-              console.log(`✅ Batch ${batchNum} done (${successCount}/${recordsToInsert.length})`);
-            }
+            // Execute all batches in parallel
+            const results = await Promise.all(promises);
+            
+            // Process results
+            results.forEach((result, idx) => {
+              const info = batchInfos[idx];
+              if (result.error) {
+                console.error(`❌ Batch ${info.batchNum} error:`, result.error);
+                errors.push(`Batch ${info.batchNum}: ${result.error.message}`);
+              } else {
+                successCount += info.size;
+              }
+            });
+            
+            console.log(`✅ Completed ${successCount}/${recordsToInsert.length} records`);
           }
+          
+          const insertTime = ((performance.now() - insertStartTime) / 1000).toFixed(2);
+          console.log(`⚡ Inserted ${successCount} records in ${insertTime}s`);
           
           // Clear progress after completion
           if (type === 'invoice') {
