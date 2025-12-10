@@ -31,7 +31,7 @@ BEGIN
     COALESCE(i.amount_total::TEXT, '0') || ',' ||
     COALESCE(credits.total_credits::TEXT, '0') || ',' ||
     COALESCE((i.amount_total - COALESCE(credits.total_credits, 0))::TEXT, '0') || ',' ||
-    COALESCE(pm.method_name, '') || ',' ||
+    COALESCE(pm.name_en, pm.method_name, '') || ',' ||
     COALESCE(i.gateway_name, '') || ',' ||
     CASE WHEN credits.total_credits > 0 THEN 'Yes' ELSE 'No' END
   FROM invoices i
@@ -43,7 +43,7 @@ BEGIN
     WHERE original_invoice_id IS NOT NULL
     GROUP BY original_invoice_id
   ) credits ON credits.original_invoice_id = i.id
-  LEFT JOIN payment_methods_config pm ON pm.id = i.payment_method_id
+  LEFT JOIN payment_methods pm ON pm.id = i.payment_method_id
   WHERE i.imported_by = auth.uid()
   ORDER BY i.sale_order_date DESC;
   
@@ -57,11 +57,11 @@ BEGIN
     COALESCE(c.amount_total::TEXT, '0') || ',' ||
     '-,' ||
     '-,' ||
-    COALESCE(pm.method_name, '') || ',' ||
+    COALESCE(pm.name_en, pm.method_name, '') || ',' ||
     COALESCE(c.gateway_name, '') || ',' ||
     '-'
   FROM credit_notes c
-  LEFT JOIN payment_methods_config pm ON pm.id = c.payment_method_id
+  LEFT JOIN payment_methods pm ON pm.id = c.payment_method_id
   WHERE c.imported_by = auth.uid()
     AND c.original_invoice_id IS NOT NULL
   ORDER BY c.credit_date DESC;
@@ -104,7 +104,7 @@ AS $$
         WHERE original_invoice_id IS NOT NULL
         GROUP BY original_invoice_id
       ) credits ON credits.original_invoice_id = i.id
-      LEFT JOIN payment_methods_config pm ON pm.id = i.payment_method_id
+      LEFT JOIN payment_methods pm ON pm.id = i.payment_method_id
       WHERE i.imported_by = auth.uid()
     ),
     'credits', (
@@ -115,12 +115,12 @@ AS $$
           'customer', COALESCE(c.customer_name, c.partner_name),
           'date', c.credit_date,
           'amount_total', c.amount_total,
-          'payment_method', pm.method_name,
+          'payment_method', COALESCE(pm.name_en, pm.method_name),
           'gateway', c.gateway_name
         )
       )
       FROM credit_notes c
-      LEFT JOIN payment_methods_config pm ON pm.id = c.payment_method_id
+      LEFT JOIN payment_methods pm ON pm.id = c.payment_method_id
       WHERE c.imported_by = auth.uid()
         AND c.original_invoice_id IS NOT NULL
     )
