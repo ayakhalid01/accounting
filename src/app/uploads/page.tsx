@@ -418,34 +418,27 @@ export default function UploadsPage() {
           const dateField = type === 'invoice' ? 'invoice_date' : 'credit_date';
           const recordsToInsert: any[] = [];
 
-          // For credits: Pre-load ALL invoices with payment gateway names
-          let invoicesMap = new Map<string, any>();
+          // Phase 1A: For credits, pre-load all invoices for faster matching (1 query instead of N)
+          let invoicesMap = new Map<string, string>(); // composite key → invoice_id
+          let matchedCount = 0;
+          let skippedCount = 0;
+          
           if (type === 'credit') {
-            console.log('⚡ Pre-loading all invoices with payment gateways for matching...');
+            console.log('📋 Pre-loading invoices for matching...');
             const { data: allInvoices } = await supabase
               .from('invoices')
-              .select(`
-                id, 
-                invoice_number, 
-                payment_method_id,
-                payment_methods(name_en, name_ar, code)
-              `);
+              .select('id, invoice_number, payment_method_id');
             
             if (allInvoices) {
-              // Build key map: "invoice_number|gateway_name" → invoice
               allInvoices.forEach(inv => {
-                const gatewayName = (inv as any).payment_methods?.name_en || 
-                                   (inv as any).payment_methods?.code || 
-                                   'null';
-                const key = `${inv.invoice_number}|${gatewayName}`;
-                invoicesMap.set(key, inv);
+                const key = `${inv.invoice_number}|${inv.payment_method_id}`;
+                invoicesMap.set(key, inv.id);
               });
-              console.log(`✅ Loaded ${allInvoices.length} invoices into memory for O(1) matching`);
-              console.log(`📋 Sample keys:`, Array.from(invoicesMap.keys()).slice(0, 3));
+              console.log(`✅ Loaded ${allInvoices.length} invoices for matching`);
             }
           }
 
-          // Phase 1: Prepare all records
+          // Phase 1B: Prepare all records
           for (const [compositeKey, groupedRow] of groupedData) {
             try {
               let paymentMethod = paymentMethods.find(pm => 
@@ -489,21 +482,16 @@ export default function UploadsPage() {
               }
 
               if (type === 'credit') {
-                // Match by Reference + Payment Gateway Name (not ID!)
-                const gatewayName = paymentMethod?.name_en || paymentMethod?.code || groupedRow.paymentGateway;
-                const lookupKey = `${groupedRow.reference}|${gatewayName}`;
-                const matchingInvoice = invoicesMap.get(lookupKey);
+                // Fast O(1) lookup using pre-loaded map
+                const lookupKey = `${groupedRow.reference}|${paymentMethod?.id || null}`;
+                const matchingInvoiceId = invoicesMap.get(lookupKey);
                 
-                if (matchingInvoice) {
-                  recordData.original_invoice_id = matchingInvoice.id;
-                  console.log(`✅ Matched: ${lookupKey}`);
+                if (matchingInvoiceId) {
+                  recordData.original_invoice_id = matchingInvoiceId;
+                  matchedCount++;
                 } else {
-                  // Debug: Log first 5 mismatches
-                  if (recordsToInsert.length < 5) {
-                    console.log(`❌ No match for: "${lookupKey}"`);
-                    console.log(`   Available sample:`, Array.from(invoicesMap.keys()).slice(0, 3));
-                  }
-                  continue; // Skip if no matching invoice
+                  skippedCount++;
+                  continue; // Skip if no matching invoice+gateway
                 }
               }
 
@@ -511,6 +499,11 @@ export default function UploadsPage() {
             } catch (rowErr: any) {
               errors.push(`${groupedRow.reference}: ${rowErr.message}`);
             }
+          }
+          
+          // Log summary for credits
+          if (type === 'credit') {
+            console.log(`✅ Matched: ${matchedCount} credits | ⏭️ Skipped: ${skippedCount} credits (no matching invoice)`);
           }
 
           // Phase 2: Batch insert (2000 at a time)
