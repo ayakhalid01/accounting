@@ -456,80 +456,10 @@ export default function UploadsPage() {
           const dateField = type === 'invoice' ? 'invoice_date' : 'credit_date';
           const recordsToInsert: any[] = [];
 
-          // Phase 1A: For credits, pre-load all invoices for faster matching (1 query instead of N)
-          let invoicesMap = new Map<string, string>(); // composite key → invoice_id
-          let invoicesByRefOnly = new Map<string, any[]>(); // reference → invoices (fallback)
+          // Phase 1A: For credits, prepare data for database matching
           let matchedCount = 0;
           let skippedCount = 0;
-          
-          if (type === 'credit') {
-            console.log('📋 Pre-loading invoices for matching...');
-            const startTime = performance.now();
-            
-            // Use cursor-based pagination (much faster than offset-based)
-            const BATCH_SIZE = 10000; // Larger batches since cursor is efficient
-            
-            let allInvoices: any[] = [];
-            let lastId: string | null = null;
-            let hasMore = true;
-            let batchNum = 0;
-            
-            // Fetch using cursor pagination (id-based, no offsets)
-            while (hasMore) {
-              batchNum++;
-              let query = supabase
-                .from('invoices')
-                .select('id, invoice_number, payment_method_id, payment_methods(name_en, code)')
-                .order('id', { ascending: true })
-                .limit(BATCH_SIZE);
-              
-              // Use cursor (last seen ID) instead of offset
-              if (lastId) {
-                query = query.gt('id', lastId);
-              }
-              
-              const { data, error } = await query;
-              
-              if (error) {
-                console.error(`❌ Error loading batch ${batchNum}:`, error);
-                break;
-              }
-              
-              if (!data || data.length === 0) {
-                hasMore = false;
-                break;
-              }
-              
-              allInvoices = allInvoices.concat(data);
-              lastId = data[data.length - 1].id; // Set cursor to last ID
-              hasMore = data.length === BATCH_SIZE; // If less than limit, we're done
-              
-              console.log(`📥 Loaded ${allInvoices.length} invoices (batch ${batchNum})...`);
-            }
-            
-            const loadTime = ((performance.now() - startTime) / 1000).toFixed(2);
-            console.log(`⚡ Loaded all invoices in ${loadTime}s`);
-            
-            if (allInvoices.length > 0) {
-              allInvoices.forEach(inv => {
-                // Extract reference from composite invoice_number (e.g., "#3443901|Bank Masr" → "#3443901")
-                const refOnly = inv.invoice_number.includes('|') 
-                  ? inv.invoice_number.split('|')[0] 
-                  : inv.invoice_number;
-                
-                // Primary key: reference + payment_method_id
-                const key = `${refOnly}|${inv.payment_method_id}`;
-                invoicesMap.set(key, inv.id);
-                
-                // Fallback: group by reference only
-                if (!invoicesByRefOnly.has(refOnly)) {
-                  invoicesByRefOnly.set(refOnly, []);
-                }
-                invoicesByRefOnly.get(refOnly)!.push(inv);
-              });
-              console.log(`✅ Loaded ${allInvoices.length} invoices for matching`);
-            }
-          }
+          let creditsToMatch: any[] = [];
 
           // Phase 1B: Prepare all records
           for (const [compositeKey, groupedRow] of groupedData) {
@@ -575,30 +505,14 @@ export default function UploadsPage() {
               }
 
               if (type === 'credit') {
-                // Try 1: Match by reference + payment_method_id
-                let lookupKey = `${groupedRow.reference}|${paymentMethod?.id || null}`;
-                let matchingInvoiceId = invoicesMap.get(lookupKey);
-                
-                // Try 2: Fallback - match by reference + gateway name (case insensitive)
-                if (!matchingInvoiceId && paymentMethod) {
-                  const candidateInvoices = invoicesByRefOnly.get(groupedRow.reference) || [];
-                  const match = candidateInvoices.find(inv => {
-                    const invMethodName = inv.payment_methods?.name_en || inv.payment_methods?.code || '';
-                    return invMethodName.toLowerCase().includes(groupedRow.paymentGateway.toLowerCase()) ||
-                           groupedRow.paymentGateway.toLowerCase().includes(invMethodName.toLowerCase());
-                  });
-                  if (match) {
-                    matchingInvoiceId = match.id;
-                  }
-                }
-                
-                if (matchingInvoiceId) {
-                  recordData.original_invoice_id = matchingInvoiceId;
-                  matchedCount++;
-                } else {
-                  skippedCount++;
-                  continue; // Skip if no matching invoice+gateway
-                }
+                // Store credit info for batch matching via database function
+                creditsToMatch.push({
+                  tempId: recordsToInsert.length, // Temporary ID to track position
+                  reference: groupedRow.reference,
+                  payment_method_id: paymentMethod?.id || null,
+                  gateway_name: groupedRow.paymentGateway,
+                  recordData: recordData
+                });
               }
 
               recordsToInsert.push(recordData);
@@ -607,45 +521,62 @@ export default function UploadsPage() {
             }
           }
           
-          // Log summary for credits
-          if (type === 'credit') {
-            console.log(`✅ Matched: ${matchedCount} credits | ⏭️ Skipped: ${skippedCount} credits (no matching invoice)`);
+          // Phase 1C: For credits, use database function to match all at once
+          if (type === 'credit' && creditsToMatch.length > 0) {
+            console.log(`🔍 Matching ${creditsToMatch.length} credits using database function...`);
+            const matchStartTime = performance.now();
             
-            // Debug: Show sample of what we're looking for vs what exists
-            if (matchedCount === 0 && skippedCount > 0) {
-              console.warn('⚠️ No matches found! Debugging info:');
-              const firstCredit = Array.from(groupedData.values())[0];
-              console.log('🔍 Looking for credit:', { 
-                ref: firstCredit.reference, 
-                gateway: firstCredit.paymentGateway 
+            // Prepare credits array with UUIDs for the function
+            const creditsPayload = creditsToMatch.map((c, idx) => ({
+              id: `00000000-0000-0000-0000-${String(idx).padStart(12, '0')}`, // Temporary UUID
+              reference: c.reference,
+              payment_method_id: c.payment_method_id,
+              gateway_name: c.gateway_name
+            }));
+            
+            // Call database function to match all credits at once
+            const { data: matches, error: matchError } = await supabase.rpc(
+              'match_credits_to_invoices',
+              { p_credits: creditsPayload }
+            );
+            
+            const matchTime = ((performance.now() - matchStartTime) / 1000).toFixed(2);
+            
+            if (matchError) {
+              console.error('❌ Error matching credits:', matchError);
+              errors.push(`Credit matching error: ${matchError.message}`);
+            } else if (matches && matches.length > 0) {
+              console.log(`⚡ Matched ${matches.length} credits in ${matchTime}s using database function`);
+              
+              // Apply matches to recordsToInsert
+              matches.forEach((match: any) => {
+                // Extract temp ID from the UUID we created
+                const tempId = parseInt(match.credit_id.split('-').pop());
+                const credit = creditsToMatch[tempId];
+                
+                if (credit) {
+                  const recordIdx = credit.tempId;
+                  recordsToInsert[recordIdx].original_invoice_id = match.invoice_id;
+                  matchedCount++;
+                  
+                  console.log(`✅ ${match.match_type}: ${credit.reference} → ${match.invoice_number}`);
+                }
               });
               
-              // Check if this exact reference exists
-              const exactMatch = invoicesByRefOnly.get(firstCredit.reference);
-              if (exactMatch && exactMatch.length > 0) {
-                console.log('✅ Found invoice(s) with same reference:', {
-                  ref: firstCredit.reference,
-                  creditGateway: firstCredit.paymentGateway,
-                  invoices: exactMatch.map(i => ({
-                    id: i.id,
-                    invoice_number: i.invoice_number,
-                    gateway: i.payment_methods?.name_en || i.payment_methods?.code || 'null',
-                    payment_method_id: i.payment_method_id
-                  }))
-                });
-              } else {
-                console.log('❌ No invoice found with reference:', firstCredit.reference);
-                console.log('💡 All references in database start with:', 
-                  Array.from(invoicesByRefOnly.keys()).slice(0, 10)
-                );
-              }
-              
-              const sampleInvoices = Array.from(invoicesByRefOnly.entries()).slice(0, 5);
-              console.log('📋 Sample invoices in database:', sampleInvoices.map(([ref, invs]) => ({
-                ref,
-                count: invs.length,
-                gateways: invs.map(i => i.payment_methods?.name_en || 'null')
-              })));
+              skippedCount = creditsToMatch.length - matchedCount;
+              console.log(`📊 Results: ${matchedCount} matched, ${skippedCount} skipped (no invoice found)`);
+            } else {
+              console.warn('⚠️ No matches found from database function');
+              skippedCount = creditsToMatch.length;
+            }
+            
+            // Remove credits without matches
+            if (skippedCount > 0) {
+              const originalLength = recordsToInsert.length;
+              recordsToInsert.splice(0, recordsToInsert.length, 
+                ...recordsToInsert.filter(r => r.original_invoice_id)
+              );
+              console.log(`⏭️ Removed ${skippedCount} credits without matching invoices`);
             }
           }
 
