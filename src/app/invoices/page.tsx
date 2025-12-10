@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import Navigation from '@/components/Navigation';
 import { auth } from '@/lib/supabase/auth';
@@ -15,7 +15,6 @@ export default function InvoicesPage() {
   const [loading, setLoading] = useState(true);
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [credits, setCredits] = useState<CreditNote[]>([]);
-  const [filteredData, setFilteredData] = useState<any[]>([]);
   
   // Filters
   const [documentType, setDocumentType] = useState<DocumentType>('all');
@@ -53,9 +52,100 @@ export default function InvoicesPage() {
     init();
   }, [router]);
 
-  useEffect(() => {
-    applyFilters();
-  }, [invoices, credits, documentType, searchTerm, startDate, endDate, selectedPaymentMethod, hasCreditsFilter, sortField, sortOrder]);
+  // Cache: Pre-calculate credits per invoice (only recalculate when data changes)
+  const invoicesWithCredits = useMemo(() => {
+    console.log('🔄 Recalculating credits mapping...');
+    
+    // Build credits index for O(1) lookup
+    const creditsMap = new Map<string, number>();
+    credits.forEach(cr => {
+      if (cr.original_invoice_id) {
+        const current = creditsMap.get(cr.original_invoice_id) || 0;
+        creditsMap.set(cr.original_invoice_id, current + cr.amount_total);
+      }
+    });
+
+    return invoices.map(inv => {
+      const totalCredits = creditsMap.get(inv.id) || 0;
+      return {
+        ...inv,
+        type: 'invoice' as const,
+        credits_applied: totalCredits,
+        net_amount: inv.amount_total - totalCredits,
+        has_credits: totalCredits > 0
+      };
+    });
+  }, [invoices, credits]);
+
+  // Cache: Filtered and sorted data
+  const filteredData = useMemo(() => {
+    console.log('🔍 Applying filters...');
+    let data: any[] = [];
+
+    // Filter by document type
+    if (documentType === 'all') {
+      data = [
+        ...invoicesWithCredits,
+        ...credits.map(cr => ({ ...cr, type: 'credit', has_credits: false }))
+      ];
+    } else if (documentType === 'invoices') {
+      data = [...invoicesWithCredits];
+    } else {
+      data = credits.map(cr => ({ ...cr, type: 'credit', has_credits: false }));
+    }
+
+    // Search filter
+    if (searchTerm) {
+      const search = searchTerm.toLowerCase();
+      data = data.filter(item => {
+        const number = item.type === 'invoice' ? item.invoice_number : item.credit_note_number;
+        const partner = item.partner_name?.toLowerCase() || '';
+        return number?.toLowerCase().includes(search) || partner.includes(search);
+      });
+    }
+
+    // Date range filter
+    if (startDate) {
+      const start = new Date(startDate).getTime();
+      data = data.filter(item => new Date(item.sale_order_date).getTime() >= start);
+    }
+    if (endDate) {
+      const end = new Date(endDate).getTime();
+      data = data.filter(item => new Date(item.sale_order_date).getTime() <= end);
+    }
+
+    // Payment method filter
+    if (selectedPaymentMethod !== 'all') {
+      data = data.filter(item => item.payment_method_id === selectedPaymentMethod);
+    }
+
+    // Credits filter (only for invoices)
+    if (hasCreditsFilter !== 'all' && documentType !== 'credits') {
+      if (hasCreditsFilter === 'with_credits') {
+        data = data.filter(item => item.type === 'invoice' && item.has_credits === true);
+      } else if (hasCreditsFilter === 'no_credits') {
+        data = data.filter(item => item.type === 'credit' || (item.type === 'invoice' && item.has_credits === false));
+      }
+    }
+
+    // Sort
+    data.sort((a, b) => {
+      let aVal, bVal;
+      
+      if (sortField === 'sale_order_date') {
+        aVal = new Date(a.sale_order_date).getTime();
+        bVal = new Date(b.sale_order_date).getTime();
+      } else {
+        aVal = a.amount_total;
+        bVal = b.amount_total;
+      }
+
+      return sortOrder === 'asc' ? aVal - bVal : bVal - aVal;
+    });
+
+    console.log('✅ Filtered data:', data.length, 'items');
+    return data;
+  }, [invoicesWithCredits, credits, documentType, searchTerm, startDate, endDate, selectedPaymentMethod, hasCreditsFilter, sortField, sortOrder]);
 
   const loadInvoices = async () => {
     try {
@@ -106,95 +196,6 @@ export default function InvoicesPage() {
     } catch (err: any) {
       console.error('❌ Error loading payment methods:', err);
     }
-  };
-
-  const applyFilters = () => {
-    let data: any[] = [];
-
-    // Filter by document type
-    if (documentType === 'all') {
-      data = [
-        ...invoices.map(inv => {
-          // Calculate credits for this invoice
-          const relatedCredits = credits.filter(cr => cr.original_invoice_id === inv.id);
-          const totalCredits = relatedCredits.reduce((sum, cr) => sum + cr.amount_total, 0);
-          const netAmount = inv.amount_total - totalCredits;
-          return { 
-            ...inv, 
-            type: 'invoice',
-            credits_applied: totalCredits,
-            net_amount: netAmount,
-            has_credits: totalCredits > 0
-          };
-        }),
-        ...credits.map(cr => ({ ...cr, type: 'credit', has_credits: false }))
-      ];
-    } else if (documentType === 'invoices') {
-      data = invoices.map(inv => {
-        // Calculate credits for this invoice
-        const relatedCredits = credits.filter(cr => cr.original_invoice_id === inv.id);
-        const totalCredits = relatedCredits.reduce((sum, cr) => sum + cr.amount_total, 0);
-        const netAmount = inv.amount_total - totalCredits;
-        return { 
-          ...inv, 
-          type: 'invoice',
-          credits_applied: totalCredits,
-          net_amount: netAmount,
-          has_credits: totalCredits > 0
-        };
-      });
-    } else {
-      data = credits.map(cr => ({ ...cr, type: 'credit', has_credits: false }));
-    }
-
-    // Search filter
-    if (searchTerm) {
-      data = data.filter(item => {
-        const number = item.type === 'invoice' ? item.invoice_number : item.credit_note_number;
-        const partner = item.partner_name?.toLowerCase() || '';
-        return number?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-               partner.includes(searchTerm.toLowerCase());
-      });
-    }
-
-    // Date range filter
-    if (startDate) {
-      data = data.filter(item => new Date(item.sale_order_date) >= new Date(startDate));
-    }
-    if (endDate) {
-      data = data.filter(item => new Date(item.sale_order_date) <= new Date(endDate));
-    }
-
-    // Payment method filter
-    if (selectedPaymentMethod !== 'all') {
-      data = data.filter(item => item.payment_method_id === selectedPaymentMethod);
-    }
-
-    // Credits filter (only for invoices)
-    if (hasCreditsFilter !== 'all' && documentType !== 'credits') {
-      if (hasCreditsFilter === 'with_credits') {
-        data = data.filter(item => item.type === 'invoice' && item.has_credits === true);
-      } else if (hasCreditsFilter === 'no_credits') {
-        data = data.filter(item => item.type === 'credit' || (item.type === 'invoice' && item.has_credits === false));
-      }
-    }
-
-    // Sort
-    data.sort((a, b) => {
-      let aVal, bVal;
-      
-      if (sortField === 'sale_order_date') {
-        aVal = new Date(a.sale_order_date).getTime();
-        bVal = new Date(b.sale_order_date).getTime();
-      } else {
-        aVal = a.amount_total;
-        bVal = b.amount_total;
-      }
-
-      return sortOrder === 'asc' ? aVal - bVal : bVal - aVal;
-    });
-
-    setFilteredData(data);
   };
 
   const toggleSort = (field: 'sale_order_date' | 'amount_total') => {
