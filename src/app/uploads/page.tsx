@@ -407,7 +407,13 @@ export default function UploadsPage() {
 
           console.log(`📊 Grouped ${jsonData.length} rows into ${groupedData.size} unique references`);
 
-          // Now process grouped data
+          // Prepare constants
+          const table = type === 'invoice' ? 'invoices' : 'credit_notes';
+          const numberField = type === 'invoice' ? 'invoice_number' : 'credit_note_number';
+          const dateField = type === 'invoice' ? 'invoice_date' : 'credit_date';
+          const recordsToInsert: any[] = [];
+
+          // Phase 1: Prepare all records
           for (const [reference, groupedRow] of groupedData) {
             try {
               let paymentMethod = paymentMethods.find(pm => 
@@ -415,9 +421,7 @@ export default function UploadsPage() {
                 pm.code.toLowerCase().includes(groupedRow.paymentGateway.toLowerCase())
               );
 
-              // If payment method not found, create it
               if (!paymentMethod && groupedRow.paymentGateway) {
-                console.log(`🆕 Creating new payment method: ${groupedRow.paymentGateway}`);
                 const { data: newMethod, error: methodError } = await supabase
                   .from('payment_methods')
                   .insert({
@@ -432,16 +436,9 @@ export default function UploadsPage() {
 
                 if (!methodError && newMethod) {
                   paymentMethod = newMethod;
-                  paymentMethods.push(newMethod); // Add to cache
-                  console.log(`✅ Created payment method: ${newMethod.name_en} (ID: ${newMethod.id})`);
-                } else {
-                  console.error(`❌ Failed to create payment method:`, methodError);
+                  paymentMethods.push(newMethod);
                 }
               }
-
-              const table = type === 'invoice' ? 'invoices' : 'credit_notes';
-              const numberField = type === 'invoice' ? 'invoice_number' : 'credit_note_number';
-              const dateField = type === 'invoice' ? 'invoice_date' : 'credit_date';
 
               const recordData: any = {
                 [numberField]: reference || `AUTO-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
@@ -449,18 +446,16 @@ export default function UploadsPage() {
                 payment_method_id: paymentMethod?.id || null,
                 [dateField]: groupedRow.saleOrderDate,
                 sale_order_date: groupedRow.saleOrderDate,
-                amount_total: groupedRow.amount, // Grouped sum
+                amount_total: groupedRow.amount,
                 currency: 'EGP',
                 state: 'posted',
                 imported_by: session.user.id,
               };
 
-              // Add invoice_type for invoices table
               if (type === 'invoice') {
                 recordData.invoice_type = 'invoice';
               }
 
-              // For credits, try to find matching invoice by reference
               if (type === 'credit') {
                 const { data: matchingInvoice } = await supabase
                   .from('invoices')
@@ -470,49 +465,41 @@ export default function UploadsPage() {
                 
                 if (matchingInvoice) {
                   recordData.original_invoice_id = matchingInvoice.id;
-                  console.log(`✅ Linked credit ${reference} to invoice ${matchingInvoice.id}`);
                 } else {
-                  // Skip credit if no matching invoice found (this is expected behavior, not an error)
-                  console.log(`⏭️ Skipped credit ${reference} - no matching invoice (expected)`);
-                  // Don't add to errors array since this is intentional
-                  continue;
+                  continue; // Skip if no matching invoice
                 }
               }
 
-              // Check if record already exists
-              const { data: existingRecord } = await supabase
-                .from(table)
-                .select('id')
-                .eq(numberField, reference)
-                .maybeSingle();
-
-              if (existingRecord) {
-                // Update existing record
-                const { error: updateError } = await supabase
-                  .from(table)
-                  .update(recordData)
-                  .eq('id', existingRecord.id);
-
-                if (updateError) {
-                  errors.push(`${reference}: ${updateError.message}`);
-                } else {
-                  successCount++;
-                }
-              } else {
-                // Insert new record
-                const { error: insertError } = await supabase
-                  .from(table)
-                  .insert(recordData);
-
-                if (insertError) {
-                  errors.push(`${reference}: ${insertError.message}`);
-                } else {
-                  successCount++;
-                }
-              }
-
+              recordsToInsert.push(recordData);
             } catch (rowErr: any) {
               errors.push(`${reference}: ${rowErr.message}`);
+            }
+          }
+
+          // Phase 2: Batch insert (1000 at a time)
+          const BATCH_SIZE = 1000;
+          console.log(`⚡ Batch inserting ${recordsToInsert.length} records (${BATCH_SIZE} per batch)...`);
+          
+          for (let i = 0; i < recordsToInsert.length; i += BATCH_SIZE) {
+            const batch = recordsToInsert.slice(i, i + BATCH_SIZE);
+            const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+            const totalBatches = Math.ceil(recordsToInsert.length / BATCH_SIZE);
+            
+            console.log(`📦 Batch ${batchNum}/${totalBatches} (${batch.length} records)...`);
+            
+            const { error: batchError } = await supabase
+              .from(table)
+              .upsert(batch, { 
+                onConflict: numberField,
+                ignoreDuplicates: false 
+              });
+
+            if (batchError) {
+              console.error(`❌ Batch ${batchNum} error:`, batchError);
+              errors.push(`Batch ${batchNum}: ${batchError.message}`);
+            } else {
+              successCount += batch.length;
+              console.log(`✅ Batch ${batchNum} done (${successCount}/${recordsToInsert.length})`);
             }
           }
 
