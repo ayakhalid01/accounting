@@ -418,8 +418,26 @@ export default function UploadsPage() {
           const dateField = type === 'invoice' ? 'invoice_date' : 'credit_date';
           const recordsToInsert: any[] = [];
 
+          // For credits: Pre-load ALL invoices at once (faster than querying one by one)
+          let invoicesMap = new Map<string, any>();
+          if (type === 'credit') {
+            console.log('⚡ Pre-loading all invoices for fast matching...');
+            const { data: allInvoices } = await supabase
+              .from('invoices')
+              .select('id, invoice_number, payment_method_id');
+            
+            if (allInvoices) {
+              // Build composite key map: "invoice_number|payment_method_id" → invoice
+              allInvoices.forEach(inv => {
+                const key = `${inv.invoice_number}|${inv.payment_method_id || 'null'}`;
+                invoicesMap.set(key, inv);
+              });
+              console.log(`✅ Loaded ${allInvoices.length} invoices into memory for O(1) matching`);
+            }
+          }
+
           // Phase 1: Prepare all records
-          for (const [reference, groupedRow] of groupedData) {
+          for (const [compositeKey, groupedRow] of groupedData) {
             try {
               let paymentMethod = paymentMethods.find(pm => 
                 pm.name_en.toLowerCase().includes(groupedRow.paymentGateway.toLowerCase()) ||
@@ -446,7 +464,7 @@ export default function UploadsPage() {
               }
 
               const recordData: any = {
-                [numberField]: reference || `AUTO-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+                [numberField]: groupedRow.reference || `AUTO-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
                 partner_name: 'Imported Customer',
                 payment_method_id: paymentMethod?.id || null,
                 [dateField]: groupedRow.saleOrderDate,
@@ -462,26 +480,20 @@ export default function UploadsPage() {
               }
 
               if (type === 'credit') {
-                // Match by Reference AND Payment Gateway
-                const { data: matchingInvoice } = await supabase
-                  .from('invoices')
-                  .select('id, invoice_number, payment_method_id')
-                  .eq('invoice_number', reference)
-                  .eq('payment_method_id', paymentMethod?.id || null)
-                  .maybeSingle();
+                // Fast O(1) lookup from pre-loaded map
+                const lookupKey = `${groupedRow.reference}|${paymentMethod?.id || 'null'}`;
+                const matchingInvoice = invoicesMap.get(lookupKey);
                 
                 if (matchingInvoice) {
                   recordData.original_invoice_id = matchingInvoice.id;
-                  console.log(`✅ Matched credit ${reference} (${groupedRow.paymentGateway}) → Invoice ${matchingInvoice.id}`);
                 } else {
-                  console.log(`⏭️ Skipped credit ${reference} (${groupedRow.paymentGateway}) - no matching invoice with same payment method`);
                   continue; // Skip if no matching invoice+gateway
                 }
               }
 
               recordsToInsert.push(recordData);
             } catch (rowErr: any) {
-              errors.push(`${reference}: ${rowErr.message}`);
+              errors.push(`${groupedRow.reference}: ${rowErr.message}`);
             }
           }
 
