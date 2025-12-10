@@ -466,43 +466,45 @@ export default function UploadsPage() {
             console.log('📋 Pre-loading invoices for matching...');
             const startTime = performance.now();
             
-            // Fetch invoices in parallel batches for speed
-            const BATCH_SIZE = 5000;
-            const PARALLEL_REQUESTS = 5;
-            
-            // First get total count
-            const { count: totalCount } = await supabase
-              .from('invoices')
-              .select('*', { count: 'exact', head: true });
-            
-            console.log(`📊 Total invoices in database: ${totalCount}`);
+            // Use cursor-based pagination (much faster than offset-based)
+            const BATCH_SIZE = 10000; // Larger batches since cursor is efficient
             
             let allInvoices: any[] = [];
-            const totalBatches = Math.ceil((totalCount || 0) / BATCH_SIZE);
+            let lastId: string | null = null;
+            let hasMore = true;
+            let batchNum = 0;
             
-            // Fetch in parallel batches
-            for (let i = 0; i < totalBatches; i += PARALLEL_REQUESTS) {
-              const promises = [];
+            // Fetch using cursor pagination (id-based, no offsets)
+            while (hasMore) {
+              batchNum++;
+              let query = supabase
+                .from('invoices')
+                .select('id, invoice_number, payment_method_id, payment_methods(name_en, code)')
+                .order('id', { ascending: true })
+                .limit(BATCH_SIZE);
               
-              for (let j = 0; j < PARALLEL_REQUESTS && (i + j) < totalBatches; j++) {
-                const batchIndex = i + j;
-                const from = batchIndex * BATCH_SIZE;
-                const to = from + BATCH_SIZE - 1;
-                
-                promises.push(
-                  supabase
-                    .from('invoices')
-                    .select('id, invoice_number, payment_method_id, payment_methods(name_en, code)')
-                    .range(from, to)
-                );
+              // Use cursor (last seen ID) instead of offset
+              if (lastId) {
+                query = query.gt('id', lastId);
               }
               
-              const results = await Promise.all(promises);
-              results.forEach(({ data }) => {
-                if (data) allInvoices = allInvoices.concat(data);
-              });
+              const { data, error } = await query;
               
-              console.log(`📥 Loaded ${allInvoices.length}/${totalCount} invoices...`);
+              if (error) {
+                console.error(`❌ Error loading batch ${batchNum}:`, error);
+                break;
+              }
+              
+              if (!data || data.length === 0) {
+                hasMore = false;
+                break;
+              }
+              
+              allInvoices = allInvoices.concat(data);
+              lastId = data[data.length - 1].id; // Set cursor to last ID
+              hasMore = data.length === BATCH_SIZE; // If less than limit, we're done
+              
+              console.log(`📥 Loaded ${allInvoices.length} invoices (batch ${batchNum})...`);
             }
             
             const loadTime = ((performance.now() - startTime) / 1000).toFixed(2);

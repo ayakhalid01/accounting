@@ -155,10 +155,10 @@ export default function InvoicesPage() {
   const paginatedData = useMemo(() => {
     const startIndex = (currentPage - 1) * itemsPerPage;
     const endIndex = startIndex + itemsPerPage;
-    return filteredAndSortedData.slice(startIndex, endIndex);
-  }, [filteredAndSortedData, currentPage, itemsPerPage]);
+    return filteredData.slice(startIndex, endIndex);
+  }, [filteredData, currentPage, itemsPerPage]);
   
-  const totalPages = Math.ceil(filteredAndSortedData.length / itemsPerPage);
+  const totalPages = Math.ceil(filteredData.length / itemsPerPage);
   
   // Reset to page 1 when filters change
   useEffect(() => {
@@ -509,7 +509,7 @@ export default function InvoicesPage() {
                     </td>
                   </tr>
                 ) : (
-                  paginatedData.map((item) => {
+                  paginatedData.map((item, idx) => (
                     <tr key={idx} className="hover:bg-gray-50">
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="flex items-center gap-2">
@@ -566,7 +566,8 @@ export default function InvoicesPage() {
                         </span>
                       </td>
                     </tr>
-                  ))}
+                  ))
+                )}
               </tbody>
             </table>
           </div>
@@ -597,8 +598,8 @@ export default function InvoicesPage() {
                 <div>
                   <p className="text-sm text-gray-700">
                     Showing <span className="font-medium">{(currentPage - 1) * itemsPerPage + 1}</span> to{' '}
-                    <span className="font-medium">{Math.min(currentPage * itemsPerPage, filteredAndSortedData.length)}</span> of{' '}
-                    <span className="font-medium">{filteredAndSortedData.length}</span> results
+                    <span className="font-medium">{Math.min(currentPage * itemsPerPage, filteredData.length)}</span> of{' '}
+                    <span className="font-medium">{filteredData.length}</span> results
                   </p>
                 </div>
                 <div>
