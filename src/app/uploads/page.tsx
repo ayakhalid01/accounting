@@ -346,17 +346,43 @@ export default function UploadsPage() {
         
         console.log(`📊 Found ${beforeCount} existing ${type}s to delete`);
         
-        const { error: deleteError, count: deletedCount } = await supabase
-          .from(table)
-          .delete({ count: 'exact' })
-          .neq('id', '00000000-0000-0000-0000-000000000000'); // Delete all
-
-        if (deleteError) {
-          console.error('❌ Error deleting records:', deleteError);
-          setError(`Failed to delete existing ${type}s: ${deleteError.message}`);
-        } else {
-          console.log(`✅ Deleted ${deletedCount || beforeCount} existing ${type}s`);
+        // Delete in batches to avoid timeout
+        const DELETE_BATCH_SIZE = 5000;
+        let totalDeleted = 0;
+        let hasMore = true;
+        
+        while (hasMore && totalDeleted < (beforeCount || 0)) {
+          const { data: batch, error: fetchError } = await supabase
+            .from(table)
+            .select('id')
+            .limit(DELETE_BATCH_SIZE);
+          
+          if (fetchError || !batch || batch.length === 0) {
+            hasMore = false;
+            break;
+          }
+          
+          const ids = batch.map(r => r.id);
+          const { error: deleteError, count: deletedCount } = await supabase
+            .from(table)
+            .delete({ count: 'exact' })
+            .in('id', ids);
+          
+          if (deleteError) {
+            console.error('❌ Error deleting batch:', deleteError);
+            setError(`Failed to delete existing ${type}s: ${deleteError.message}`);
+            return;
+          }
+          
+          totalDeleted += deletedCount || batch.length;
+          console.log(`🗑️ Deleted ${totalDeleted}/${beforeCount} ${type}s...`);
+          
+          if (batch.length < DELETE_BATCH_SIZE) {
+            hasMore = false;
+          }
         }
+        
+        console.log(`✅ Deleted ${totalDeleted} existing ${type}s`);
       }
 
       const reader = new FileReader();
