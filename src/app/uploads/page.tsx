@@ -535,13 +535,14 @@ export default function UploadsPage() {
               payment_method_id: c.payment_method_id ? c.payment_method_id.substring(0, 8) + '...' : 'null'
             })));
             
-            // Split into batches to avoid statement timeout (5000 credits per batch)
-            const MATCH_BATCH_SIZE = 5000;
+            // Split into batches matching PostgREST limit (1000 credits per batch to get 1000 results)
+            // PostgREST enforces 1000 row limit on RPC results regardless of function code
+            const MATCH_BATCH_SIZE = 1000;
             const totalMatchBatches = Math.ceil(creditsToMatch.length / MATCH_BATCH_SIZE);
             const allMatches: any[] = [];
             let matchError: any = null;
             
-            console.log(`🚀 Splitting into ${totalMatchBatches} batches (${MATCH_BATCH_SIZE} credits per batch)...`);
+            console.log(`🚀 Splitting into ${totalMatchBatches} batches (${MATCH_BATCH_SIZE} credits per batch - PostgREST limit workaround)...`);
             
             for (let batchIdx = 0; batchIdx < totalMatchBatches; batchIdx++) {
               const batchStart = batchIdx * MATCH_BATCH_SIZE;

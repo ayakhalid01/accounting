@@ -30,15 +30,7 @@ DECLARE
   v_gateway_name TEXT;
   v_credit_id UUID;
 BEGIN
-  -- Create temp table for results to bypass row limits
-  CREATE TEMP TABLE IF NOT EXISTS temp_matches (
-    credit_id UUID,
-    invoice_id UUID,
-    match_type TEXT,
-    invoice_number TEXT
-  ) ON COMMIT DROP;
-
-  -- Loop through each credit
+  -- Loop through each credit and return results directly
   FOR credit_record IN SELECT * FROM jsonb_array_elements(p_credits)
   LOOP
     v_credit_id := (credit_record->>'id')::UUID;
@@ -63,13 +55,12 @@ BEGIN
     LIMIT 1;
     
     IF FOUND THEN
-      -- Insert exact match into temp table
-      INSERT INTO temp_matches VALUES (
-        v_credit_id,
-        matched_invoice.id,
-        'exact',
-        matched_invoice.invoice_number
-      );
+      -- Return exact match immediately
+      credit_id := v_credit_id;
+      invoice_id := matched_invoice.id;
+      match_type := 'exact';
+      invoice_number := matched_invoice.invoice_number;
+      RETURN NEXT;
       CONTINUE;
     END IF;
     
@@ -91,19 +82,17 @@ BEGIN
       LIMIT 1;
       
       IF FOUND THEN
-        -- Insert gateway fallback match into temp table
-        INSERT INTO temp_matches VALUES (
-          v_credit_id,
-          matched_invoice.id,
-          'gateway_fallback',
-          matched_invoice.invoice_number
-        );
+        -- Return gateway fallback match immediately
+        credit_id := v_credit_id;
+        invoice_id := matched_invoice.id;
+        match_type := 'gateway_fallback';
+        invoice_number := matched_invoice.invoice_number;
+        RETURN NEXT;
       END IF;
     END IF;
   END LOOP;
   
-  -- Return all results from temp table (bypasses PostgREST limit)
-  RETURN QUERY SELECT * FROM temp_matches;
+  RETURN;
 END;
 $$;
 
