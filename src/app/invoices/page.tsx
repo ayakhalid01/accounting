@@ -89,7 +89,7 @@ export default function InvoicesPage() {
         .from('invoices')
         .select(`
           *,
-          payment_method:payment_methods_config(id, method_name, name_en)
+          payment_method:payment_methods(id, name_en)
         `);
       
       // Apply date range filter
@@ -133,7 +133,7 @@ export default function InvoicesPage() {
         .from('credit_notes')
         .select(`
           *,
-          payment_method:payment_methods_config(id, method_name, name_en)
+          payment_method:payment_methods(id, name_en)
         `)
         .not('original_invoice_id', 'is', null);
       
@@ -171,9 +171,9 @@ export default function InvoicesPage() {
   const loadPaymentMethods = async () => {
     try {
       const { data, error } = await supabase
-        .from('payment_methods_config')
+        .from('payment_methods')
         .select('*')
-        .order('method_name');
+        .order('name_en');
 
       if (error) throw error;
       setPaymentMethods(data || []);
@@ -553,7 +553,7 @@ export default function InvoicesPage() {
                 <option value="all">All Methods</option>
                 {paymentMethods.map((method) => (
                   <option key={method.id} value={method.id}>
-                    {method.method_name}
+                    {method.name_en}
                   </option>
                 ))}
               </select>
@@ -697,7 +697,7 @@ export default function InvoicesPage() {
                         )}
                       </td>
                       <td className="px-4 py-3 text-sm">
-                        {item.payment_method?.method_name || item.payment_method?.name_en || '-'}
+                        {item.payment_method?.name_en || '-'}
                       </td>
                     </tr>
                   ))}
