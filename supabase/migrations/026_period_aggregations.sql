@@ -28,23 +28,26 @@ SECURITY INVOKER
 STABLE
 AS $$
 DECLARE
-  current_date DATE := DATE_TRUNC('month', p_start_date);
-  end_month DATE := DATE_TRUNC('month', p_end_date);
+  month_start DATE := DATE_TRUNC('month', p_start_date);
+  month_end_limit DATE := DATE_TRUNC('month', p_end_date);
+  month_end_date DATE;
 BEGIN
-  WHILE current_date <= end_month LOOP
+  WHILE month_start <= month_end_limit LOOP
+    month_end_date := (month_start + INTERVAL '1 month - 1 day')::DATE;
+    
     RETURN QUERY
     SELECT 
-      TO_CHAR(current_date, 'Mon YYYY') as period_month,
-      current_date as period_start,
-      (current_date + INTERVAL '1 month - 1 day')::DATE as period_end,
+      TO_CHAR(month_start, 'Mon YYYY') as period_month,
+      month_start as period_start,
+      month_end_date as period_end,
       
       -- Invoices for this month
       COALESCE(
         (SELECT SUM(amount_total) 
          FROM invoices 
          WHERE state = 'posted'
-           AND sale_order_date >= current_date
-           AND sale_order_date < (current_date + INTERVAL '1 month')
+           AND sale_order_date >= month_start
+           AND sale_order_date < (month_start + INTERVAL '1 month')
            AND (p_payment_method_id IS NULL OR payment_method_id = p_payment_method_id)
         ), 0
       ) as total_invoices,
@@ -55,8 +58,8 @@ BEGIN
          FROM credit_notes
          WHERE state = 'posted'
            AND original_invoice_id IS NOT NULL
-           AND sale_order_date >= current_date
-           AND sale_order_date < (current_date + INTERVAL '1 month')
+           AND sale_order_date >= month_start
+           AND sale_order_date < (month_start + INTERVAL '1 month')
            AND (p_payment_method_id IS NULL OR payment_method_id = p_payment_method_id)
         ), 0
       ) as total_credits,
@@ -66,8 +69,8 @@ BEGIN
         (SELECT SUM(amount_total) 
          FROM invoices 
          WHERE state = 'posted'
-           AND sale_order_date >= current_date
-           AND sale_order_date < (current_date + INTERVAL '1 month')
+           AND sale_order_date >= month_start
+           AND sale_order_date < (month_start + INTERVAL '1 month')
            AND (p_payment_method_id IS NULL OR payment_method_id = p_payment_method_id)
         ), 0
       ) - COALESCE(
@@ -75,8 +78,8 @@ BEGIN
          FROM credit_notes
          WHERE state = 'posted'
            AND original_invoice_id IS NOT NULL
-           AND sale_order_date >= current_date
-           AND sale_order_date < (current_date + INTERVAL '1 month')
+           AND sale_order_date >= month_start
+           AND sale_order_date < (month_start + INTERVAL '1 month')
            AND (p_payment_method_id IS NULL OR payment_method_id = p_payment_method_id)
         ), 0
       ) as net_sales,
@@ -86,8 +89,8 @@ BEGIN
         (SELECT SUM(net_amount)
          FROM deposits
          WHERE status = 'approved'
-           AND start_date <= (current_date + INTERVAL '1 month - 1 day')::DATE
-           AND end_date >= current_date
+           AND start_date <= month_end_date
+           AND end_date >= month_start
            AND (p_payment_method_id IS NULL OR payment_method_id = p_payment_method_id)
         ), 0
       ) as approved_deposits,
@@ -97,13 +100,13 @@ BEGIN
         (SELECT SUM(net_amount)
          FROM deposits
          WHERE status = 'pending'
-           AND start_date <= (current_date + INTERVAL '1 month - 1 day')::DATE
-           AND end_date >= current_date
+           AND start_date <= month_end_date
+           AND end_date >= month_start
            AND (p_payment_method_id IS NULL OR payment_method_id = p_payment_method_id)
         ), 0
       ) as pending_deposits;
     
-    current_date := current_date + INTERVAL '1 month';
+    month_start := month_start + INTERVAL '1 month';
   END LOOP;
 END;
 $$;
