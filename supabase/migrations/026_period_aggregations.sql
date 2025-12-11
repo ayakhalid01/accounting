@@ -6,7 +6,7 @@
 -- =====================================================
 
 -- =====================================================
--- 1. Monthly Aggregations Function
+-- 1. Monthly Aggregations Function (Optimized)
 -- =====================================================
 CREATE OR REPLACE FUNCTION get_monthly_aggregations(
   p_start_date DATE,
@@ -23,92 +23,67 @@ RETURNS TABLE (
   approved_deposits NUMERIC,
   pending_deposits NUMERIC
 )
-LANGUAGE plpgsql
+LANGUAGE sql
 SECURITY INVOKER
 STABLE
 AS $$
-DECLARE
-  month_start DATE := DATE_TRUNC('month', p_start_date);
-  month_end_limit DATE := DATE_TRUNC('month', p_end_date);
-  month_end_date DATE;
-BEGIN
-  WHILE month_start <= month_end_limit LOOP
-    month_end_date := (month_start + INTERVAL '1 month - 1 day')::DATE;
-    
-    RETURN QUERY
+  -- Single query with month buckets (much faster than WHILE loop)
+  WITH months AS (
+    -- Generate all months in date range
     SELECT 
-      TO_CHAR(month_start, 'Mon YYYY') as period_month,
-      month_start as period_start,
-      month_end_date as period_end,
-      
-      -- Invoices for this month
-      COALESCE(
-        (SELECT SUM(amount_total) 
-         FROM invoices 
-         WHERE state = 'posted'
-           AND sale_order_date >= month_start
-           AND sale_order_date < (month_start + INTERVAL '1 month')
-           AND (p_payment_method_id IS NULL OR payment_method_id = p_payment_method_id)
-        ), 0
-      ) as total_invoices,
-      
-      -- Credits for this month
-      COALESCE(
-        (SELECT SUM(ABS(amount_total))
-         FROM credit_notes
-         WHERE state = 'posted'
-           AND original_invoice_id IS NOT NULL
-           AND sale_order_date >= month_start
-           AND sale_order_date < (month_start + INTERVAL '1 month')
-           AND (p_payment_method_id IS NULL OR payment_method_id = p_payment_method_id)
-        ), 0
-      ) as total_credits,
-      
-      -- Net Sales
-      COALESCE(
-        (SELECT SUM(amount_total) 
-         FROM invoices 
-         WHERE state = 'posted'
-           AND sale_order_date >= month_start
-           AND sale_order_date < (month_start + INTERVAL '1 month')
-           AND (p_payment_method_id IS NULL OR payment_method_id = p_payment_method_id)
-        ), 0
-      ) - COALESCE(
-        (SELECT SUM(ABS(amount_total))
-         FROM credit_notes
-         WHERE state = 'posted'
-           AND original_invoice_id IS NOT NULL
-           AND sale_order_date >= month_start
-           AND sale_order_date < (month_start + INTERVAL '1 month')
-           AND (p_payment_method_id IS NULL OR payment_method_id = p_payment_method_id)
-        ), 0
-      ) as net_sales,
-      
-      -- Approved Deposits for this month
-      COALESCE(
-        (SELECT SUM(net_amount)
-         FROM deposits
-         WHERE status = 'approved'
-           AND start_date <= month_end_date
-           AND end_date >= month_start
-           AND (p_payment_method_id IS NULL OR payment_method_id = p_payment_method_id)
-        ), 0
-      ) as approved_deposits,
-      
-      -- Pending Deposits for this month
-      COALESCE(
-        (SELECT SUM(net_amount)
-         FROM deposits
-         WHERE status = 'pending'
-           AND start_date <= month_end_date
-           AND end_date >= month_start
-           AND (p_payment_method_id IS NULL OR payment_method_id = p_payment_method_id)
-        ), 0
-      ) as pending_deposits;
-    
-    month_start := month_start + INTERVAL '1 month';
-  END LOOP;
-END;
+      DATE_TRUNC('month', d)::DATE as month_start,
+      (DATE_TRUNC('month', d) + INTERVAL '1 month - 1 day')::DATE as month_end
+    FROM generate_series(
+      DATE_TRUNC('month', p_start_date),
+      DATE_TRUNC('month', p_end_date),
+      INTERVAL '1 month'
+    ) d
+  ),
+  invoice_agg AS (
+    SELECT 
+      DATE_TRUNC('month', sale_order_date)::DATE as month,
+      SUM(amount_total) as total
+    FROM invoices
+    WHERE state = 'posted'
+      AND sale_order_date BETWEEN p_start_date AND p_end_date
+      AND (p_payment_method_id IS NULL OR payment_method_id = p_payment_method_id)
+    GROUP BY DATE_TRUNC('month', sale_order_date)
+  ),
+  credit_agg AS (
+    SELECT 
+      DATE_TRUNC('month', sale_order_date)::DATE as month,
+      SUM(ABS(amount_total)) as total
+    FROM credit_notes
+    WHERE state = 'posted'
+      AND original_invoice_id IS NOT NULL
+      AND sale_order_date BETWEEN p_start_date AND p_end_date
+      AND (p_payment_method_id IS NULL OR payment_method_id = p_payment_method_id)
+    GROUP BY DATE_TRUNC('month', sale_order_date)
+  ),
+  deposit_agg AS (
+    SELECT 
+      m.month_start,
+      SUM(CASE WHEN d.status = 'approved' THEN d.net_amount ELSE 0 END) as approved,
+      SUM(CASE WHEN d.status = 'pending' THEN d.net_amount ELSE 0 END) as pending
+    FROM months m
+    LEFT JOIN deposits d ON d.start_date <= m.month_end AND d.end_date >= m.month_start
+      AND (p_payment_method_id IS NULL OR d.payment_method_id = p_payment_method_id)
+    GROUP BY m.month_start
+  )
+  SELECT 
+    TO_CHAR(m.month_start, 'Mon YYYY') as period_month,
+    m.month_start as period_start,
+    m.month_end as period_end,
+    COALESCE(i.total, 0)::NUMERIC as total_invoices,
+    COALESCE(c.total, 0)::NUMERIC as total_credits,
+    (COALESCE(i.total, 0) - COALESCE(c.total, 0))::NUMERIC as net_sales,
+    COALESCE(da.approved, 0)::NUMERIC as approved_deposits,
+    COALESCE(da.pending, 0)::NUMERIC as pending_deposits
+  FROM months m
+  LEFT JOIN invoice_agg i ON i.month = m.month_start
+  LEFT JOIN credit_agg c ON c.month = m.month_start
+  LEFT JOIN deposit_agg da ON da.month_start = m.month_start
+  ORDER BY m.month_start;
 $$;
 
 GRANT EXECUTE ON FUNCTION get_monthly_aggregations(DATE, DATE, UUID) TO authenticated;
