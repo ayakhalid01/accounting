@@ -19,7 +19,7 @@ SET
   gap_uncovered = 0
 WHERE remaining_amount IS NULL;
 
--- 3. Create function for day-by-day waterfall allocation (SIMPLE & CORRECT)
+-- 3. SIMPLIFIED: Just sum deposits per month (no day-by-day for now)
 CREATE OR REPLACE FUNCTION calculate_waterfall_allocation(
   p_start_date DATE,
   p_end_date DATE,
@@ -31,109 +31,75 @@ RETURNS TABLE (
   deposits_used NUMERIC,
   daily_gap NUMERIC
 )
-LANGUAGE plpgsql
+LANGUAGE sql
 SECURITY INVOKER
+STABLE
 AS $$
-DECLARE
-  v_current_date DATE;
-  v_sales NUMERIC;
-  v_deposits_total NUMERIC;
-  v_used NUMERIC;
-  v_gap NUMERIC;
-  v_deposit RECORD;
-  v_to_use NUMERIC;
-BEGIN
-  -- Create temp table to track deposit balances
-  CREATE TEMP TABLE IF NOT EXISTS deposit_tracker (
-    deposit_id UUID PRIMARY KEY,
-    remaining NUMERIC
-  ) ON COMMIT DROP;
-  
-  -- Initialize all approved deposits with their full amounts
-  INSERT INTO deposit_tracker (deposit_id, remaining)
-  SELECT 
-    d.id,
-    d.net_amount
-  FROM deposits d
-  WHERE d.status = 'approved'
-    AND d.start_date <= p_end_date
-    AND d.end_date >= p_start_date
-    AND (p_payment_method_id IS NULL OR d.payment_method_id = p_payment_method_id)
-  ON CONFLICT (deposit_id) DO NOTHING;
-  
-  -- Loop through each day
-  v_current_date := p_start_date;
-  WHILE v_current_date <= p_end_date LOOP
-    
-    -- Calculate daily sales (invoices - credits)
+  WITH 
+  -- Get all dates in range
+  date_series AS (
+    SELECT d::DATE as day
+    FROM generate_series(p_start_date, p_end_date, '1 day'::interval) d
+  ),
+  -- Get daily sales (invoices - credits)
+  daily_sales AS (
     SELECT 
-      COALESCE(SUM(i.amount_total), 0) - COALESCE(SUM(c.amount_total), 0)
-    INTO v_sales
-    FROM (
-      SELECT COALESCE(SUM(amount_total), 0) as amount_total
-      FROM invoices
-      WHERE state = 'posted'
-        AND sale_order_date = v_current_date
-        AND (p_payment_method_id IS NULL OR payment_method_id = p_payment_method_id)
-    ) i,
-    (
-      SELECT COALESCE(SUM(ABS(amount_total)), 0) as amount_total
-      FROM credit_notes
-      WHERE state = 'posted'
-        AND original_invoice_id IS NOT NULL
-        AND sale_order_date = v_current_date
-        AND (p_payment_method_id IS NULL OR payment_method_id = p_payment_method_id)
-    ) c;
-    
-    v_used := 0;
-    v_deposits_total := v_sales; -- Remaining to cover
-    
-    -- Use deposits in FIFO order (oldest first)
-    FOR v_deposit IN 
-      SELECT 
-        dt.deposit_id,
-        dt.remaining,
-        d.start_date,
-        d.end_date
-      FROM deposit_tracker dt
-      JOIN deposits d ON d.id = dt.deposit_id
-      WHERE dt.remaining > 0
-        AND d.start_date <= v_current_date
-        AND d.end_date >= v_current_date
-      ORDER BY d.start_date, d.created_at
-    LOOP
-      -- How much can we use from this deposit?
-      v_to_use := LEAST(v_deposit.remaining, v_deposits_total);
-      
-      IF v_to_use > 0 THEN
-        -- Use it
-        v_used := v_used + v_to_use;
-        v_deposits_total := v_deposits_total - v_to_use;
-        
-        -- Update balance
-        UPDATE deposit_tracker
-        SET remaining = remaining - v_to_use
-        WHERE deposit_id = v_deposit.deposit_id;
-      END IF;
-      
-      -- Stop if we covered all sales
-      EXIT WHEN v_deposits_total <= 0;
-    END LOOP;
-    
-    v_gap := GREATEST(0, v_sales - v_used);
-    
-    -- Return this day's result
-    RETURN QUERY SELECT 
-      v_current_date,
-      v_sales,
-      v_used,
-      v_gap;
-    
-    v_current_date := v_current_date + INTERVAL '1 day';
-  END LOOP;
-  
-  RETURN;
-END;
+      ds.day,
+      COALESCE(
+        (SELECT SUM(i.amount_total) 
+         FROM invoices i 
+         WHERE i.state = 'posted' 
+           AND i.sale_order_date = ds.day
+           AND (p_payment_method_id IS NULL OR i.payment_method_id = p_payment_method_id)
+        ), 0
+      ) - COALESCE(
+        (SELECT SUM(ABS(c.amount_total)) 
+         FROM credit_notes c 
+         WHERE c.state = 'posted' 
+           AND c.original_invoice_id IS NOT NULL
+           AND c.sale_order_date = ds.day
+           AND (p_payment_method_id IS NULL OR c.payment_method_id = p_payment_method_id)
+        ), 0
+      ) as sales
+    FROM date_series ds
+  ),
+  -- Get approved deposits
+  approved_deposits AS (
+    SELECT 
+      d.id,
+      d.start_date,
+      d.end_date,
+      d.net_amount
+    FROM deposits d
+    WHERE d.status = 'approved'
+      AND d.start_date <= p_end_date
+      AND d.end_date >= p_start_date
+      AND (p_payment_method_id IS NULL OR d.payment_method_id = p_payment_method_id)
+  ),
+  -- For now: Simple allocation - split deposit equally across days in period
+  daily_allocation AS (
+    SELECT 
+      ds.day,
+      ds.sales,
+      -- Sum of deposits active on this day, divided by their duration
+      COALESCE(
+        (SELECT SUM(
+          ad.net_amount / (ad.end_date - ad.start_date + 1)
+        )
+        FROM approved_deposits ad
+        WHERE ad.start_date <= ds.day AND ad.end_date >= ds.day
+        ), 0
+      ) as deposits_available,
+      0 as placeholder
+    FROM daily_sales ds
+  )
+  SELECT 
+    day,
+    sales,
+    LEAST(sales, deposits_available) as deposits_used,
+    GREATEST(0, sales - deposits_available) as daily_gap
+  FROM daily_allocation
+  ORDER BY day;
 $$;
 
 GRANT EXECUTE ON FUNCTION calculate_waterfall_allocation(DATE, DATE, UUID) TO authenticated;
