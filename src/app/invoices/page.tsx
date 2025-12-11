@@ -56,31 +56,63 @@ export default function InvoicesPage() {
   const loadStatistics = async () => {
     try {
       console.log('📊 [STATS] Loading aggregations with filters...');
-      const { data, error } = await supabase.rpc('get_dashboard_aggregations', {
+      
+      // Get aggregations (amounts)
+      const { data: aggData, error: aggError } = await supabase.rpc('get_dashboard_aggregations', {
         p_start_date: startDate,
         p_end_date: endDate,
         p_payment_method_id: selectedPaymentMethod === 'all' ? null : selectedPaymentMethod
       });
       
-      if (error) {
-        console.error('❌ [STATS] Error:', error);
+      if (aggError) {
+        console.error('❌ [STATS] Aggregation Error:', aggError);
         return;
       }
       
-      if (data && data.length > 0) {
-        // Map aggregations to statistics format
+      // Get actual counts
+      let invoicesQuery = supabase
+        .from('invoices')
+        .select('id', { count: 'exact', head: true })
+        .eq('state', 'posted')
+        .gte('sale_order_date', startDate)
+        .lte('sale_order_date', endDate);
+      
+      if (selectedPaymentMethod !== 'all') {
+        invoicesQuery = invoicesQuery.eq('payment_method_id', selectedPaymentMethod);
+      }
+      
+      let creditsQuery = supabase
+        .from('credit_notes')
+        .select('id', { count: 'exact', head: true })
+        .eq('state', 'posted')
+        .not('original_invoice_id', 'is', null)
+        .gte('sale_order_date', startDate)
+        .lte('sale_order_date', endDate);
+      
+      if (selectedPaymentMethod !== 'all') {
+        creditsQuery = creditsQuery.eq('payment_method_id', selectedPaymentMethod);
+      }
+      
+      const [{ count: invoicesCount }, { count: creditsCount }] = await Promise.all([
+        invoicesQuery,
+        creditsQuery
+      ]);
+      
+      if (aggData && aggData.length > 0) {
         setStatistics({
-          total_invoices_amount: data[0].total_invoices_amount,
-          total_credits_amount: data[0].total_credits_amount,
-          net_amount: data[0].net_sales,
-          total_invoices_count: Math.round(data[0].total_invoices_amount / 1000), // Approximate
-          total_credits_count: Math.round(data[0].total_credits_amount / 1000), // Approximate
+          total_invoices_amount: aggData[0].total_invoices_amount,
+          total_credits_amount: aggData[0].total_credits_amount,
+          net_amount: aggData[0].net_sales,
+          total_invoices_count: invoicesCount || 0,
+          total_credits_count: creditsCount || 0,
           last_updated: new Date().toISOString()
         });
         console.log('✅ [STATS] Loaded:', {
-          invoices: data[0].total_invoices_amount,
-          credits: data[0].total_credits_amount,
-          net: data[0].net_sales
+          invoices_amount: aggData[0].total_invoices_amount,
+          invoices_count: invoicesCount,
+          credits_amount: aggData[0].total_credits_amount,
+          credits_count: creditsCount,
+          net: aggData[0].net_sales
         });
       }
     } catch (error) {
