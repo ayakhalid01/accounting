@@ -87,7 +87,10 @@ export default function InvoicesPage() {
       
       let query = supabase
         .from('invoices')
-        .select('*');
+        .select(`
+          *,
+          payment_method:payment_methods_config(id, method_name, name_en)
+        `);
       
       // Apply date range filter
       if (startDate) {
@@ -128,7 +131,10 @@ export default function InvoicesPage() {
       
       let query = supabase
         .from('credit_notes')
-        .select('*')
+        .select(`
+          *,
+          payment_method:payment_methods_config(id, method_name, name_en)
+        `)
         .not('original_invoice_id', 'is', null);
       
       // Apply date range filter
@@ -691,7 +697,7 @@ export default function InvoicesPage() {
                         )}
                       </td>
                       <td className="px-4 py-3 text-sm">
-                        {paymentMethods.find(m => m.id === item.payment_method_id)?.method_name || '-'}
+                        {item.payment_method?.method_name || item.payment_method?.name_en || '-'}
                       </td>
                     </tr>
                   ))}
