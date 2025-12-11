@@ -57,9 +57,9 @@ export default function InvoicesPage() {
   const [sortField, setSortField] = useState<'sale_order_date' | 'amount_total'>(savedFilters?.sortField || 'sale_order_date');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>(savedFilters?.sortOrder || 'desc');
   
-  // Pagination
+  // Pagination - Restored from localStorage
   const [currentPage, setCurrentPage] = useState(1);
-  const [itemsPerPage] = useState(1000); // Load 1000 per page
+  const [itemsPerPage, setItemsPerPage] = useState(savedFilters?.itemsPerPage || 100); // Default 100 rows
 
   // ============================================
   // Save Filters to localStorage
@@ -73,10 +73,11 @@ export default function InvoicesPage() {
       selectedPaymentMethod,
       hasCreditsFilter,
       sortField,
-      sortOrder
+      sortOrder,
+      itemsPerPage
     };
     localStorage.setItem('invoices_filters', JSON.stringify(filtersToSave));
-  }, [documentType, searchTerm, startDate, endDate, selectedPaymentMethod, hasCreditsFilter, sortField, sortOrder]);
+  }, [documentType, searchTerm, startDate, endDate, selectedPaymentMethod, hasCreditsFilter, sortField, sortOrder, itemsPerPage]);
 
   // ============================================
   // Load Statistics with Filters (All Users See All Data)
@@ -317,7 +318,7 @@ export default function InvoicesPage() {
         console.log('✅ [FILTERS] Reloaded with new filters');
       });
     }
-  }, [sortField, sortOrder, startDate, endDate, selectedPaymentMethod]);
+  }, [sortField, sortOrder, startDate, endDate, selectedPaymentMethod, itemsPerPage]);
 
   // ============================================
   // Calculate Credits Applied to Each Invoice
@@ -676,8 +677,28 @@ export default function InvoicesPage() {
         <div className="bg-white rounded-lg shadow-sm border border-gray-200">
           {/* Pagination - TOP */}
           <div className="p-4 border-b border-gray-200 flex items-center justify-between">
-            <div className="text-sm text-gray-600">
-              Page {currentPage} of {totalPages} • {filteredData.length} items on this page
+            <div className="flex items-center gap-4">
+              <div className="text-sm text-gray-600">
+                Page {currentPage} of {totalPages} • {filteredData.length} items on this page
+              </div>
+              <div className="flex items-center gap-2">
+                <label className="text-sm text-gray-600">Show:</label>
+                <select
+                  value={itemsPerPage}
+                  onChange={(e) => {
+                    setItemsPerPage(Number(e.target.value));
+                    setCurrentPage(1);
+                  }}
+                  className="px-2 py-1 text-sm border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-primary-500"
+                >
+                  <option value={50}>50</option>
+                  <option value={100}>100</option>
+                  <option value={200}>200</option>
+                  <option value={500}>500</option>
+                  <option value={1000}>1000</option>
+                </select>
+                <span className="text-sm text-gray-600">rows</span>
+              </div>
             </div>
             <div className="flex gap-2">
               <button
@@ -781,8 +802,28 @@ export default function InvoicesPage() {
 
           {/* Pagination - BOTTOM (duplicate for convenience) */}
           <div className="p-4 border-t border-gray-200 flex items-center justify-between">
-            <div className="text-sm text-gray-600">
-              Page {currentPage} of {totalPages} • {filteredData.length} items on this page
+            <div className="flex items-center gap-4">
+              <div className="text-sm text-gray-600">
+                Page {currentPage} of {totalPages} • {filteredData.length} items on this page
+              </div>
+              <div className="flex items-center gap-2">
+                <label className="text-sm text-gray-600">Show:</label>
+                <select
+                  value={itemsPerPage}
+                  onChange={(e) => {
+                    setItemsPerPage(Number(e.target.value));
+                    setCurrentPage(1);
+                  }}
+                  className="px-2 py-1 text-sm border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-primary-500"
+                >
+                  <option value={50}>50</option>
+                  <option value={100}>100</option>
+                  <option value={200}>200</option>
+                  <option value={500}>500</option>
+                  <option value={1000}>1000</option>
+                </select>
+                <span className="text-sm text-gray-600">rows</span>
+              </div>
             </div>
             <div className="flex gap-2">
               <button
