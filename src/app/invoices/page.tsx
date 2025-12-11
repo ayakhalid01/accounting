@@ -51,12 +51,16 @@ export default function InvoicesPage() {
   const [itemsPerPage] = useState(1000); // Load 1000 per page
 
   // ============================================
-  // Load Statistics from Database View (Instant!)
+  // Load Statistics from Database Aggregations (Real-time!)
   // ============================================
   const loadStatistics = async () => {
     try {
-      console.log('📊 [STATS] Loading from database view...');
-      const { data, error } = await supabase.rpc('get_dashboard_statistics');
+      console.log('📊 [STATS] Loading from database aggregations...');
+      const { data, error } = await supabase.rpc('get_dashboard_aggregations', {
+        p_start_date: startDate,
+        p_end_date: endDate,
+        p_payment_method_id: selectedPaymentMethod === 'all' ? null : selectedPaymentMethod
+      });
       
       if (error) {
         console.error('❌ [STATS] Error:', error);
@@ -64,11 +68,19 @@ export default function InvoicesPage() {
       }
       
       if (data && data.length > 0) {
-        setStatistics(data[0]);
+        // Map aggregations to statistics format
+        setStatistics({
+          total_invoices_count: Number(data[0].total_invoices_count),
+          total_invoices_amount: Number(data[0].total_invoices_amount),
+          total_credits_count: Number(data[0].total_credits_count),
+          total_credits_amount: Number(data[0].total_credits_amount),
+          net_amount: Number(data[0].net_sales),
+          last_updated: new Date().toISOString()
+        });
         console.log('✅ [STATS] Loaded:', {
           invoices: data[0].total_invoices_count,
           credits: data[0].total_credits_count,
-          net: data[0].net_amount
+          net: data[0].net_sales
         });
       }
     } catch (error) {
@@ -238,7 +250,8 @@ export default function InvoicesPage() {
       setLoading(true);
       Promise.all([
         loadInvoices(1),
-        loadCredits(1)
+        loadCredits(1),
+        loadStatistics() // Reload stats when filters change
       ]).then(() => {
         setLoading(false);
         console.log('✅ [FILTERS] Reloaded with new filters');
