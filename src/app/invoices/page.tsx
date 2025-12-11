@@ -36,8 +36,8 @@ export default function InvoicesPage() {
   // Filters
   const [documentType, setDocumentType] = useState<DocumentType>('all');
   const [searchTerm, setSearchTerm] = useState('');
-  const [startDate, setStartDate] = useState('');
-  const [endDate, setEndDate] = useState('');
+  const [startDate, setStartDate] = useState('2025-11-01'); // Default start date
+  const [endDate, setEndDate] = useState('2025-12-31'); // Default end date
   const [selectedPaymentMethod, setSelectedPaymentMethod] = useState('all');
   const [hasCreditsFilter, setHasCreditsFilter] = useState<'all' | 'with_credits' | 'no_credits'>('all');
   const [paymentMethods, setPaymentMethods] = useState<any[]>([]);
@@ -81,13 +81,28 @@ export default function InvoicesPage() {
   // ============================================
   const loadInvoices = async (page: number = currentPage) => {
     try {
-      console.log(`📥 [INVOICES] Loading page ${page}...`);
+      console.log(`📥 [INVOICES] Loading page ${page} with date filter: ${startDate} to ${endDate}...`);
       
       const offset = (page - 1) * itemsPerPage;
       
-      const { data, error } = await supabase
+      let query = supabase
         .from('invoices')
-        .select('*')
+        .select('*');
+      
+      // Apply date range filter
+      if (startDate) {
+        query = query.gte('sale_order_date', startDate);
+      }
+      if (endDate) {
+        query = query.lte('sale_order_date', endDate);
+      }
+      
+      // Apply payment method filter
+      if (selectedPaymentMethod !== 'all') {
+        query = query.eq('payment_method_id', selectedPaymentMethod);
+      }
+      
+      const { data, error } = await query
         .order('sale_order_date', { ascending: sortOrder === 'asc' })
         .range(offset, offset + itemsPerPage - 1);
 
@@ -107,14 +122,29 @@ export default function InvoicesPage() {
   // ============================================
   const loadCredits = async (page: number = currentPage) => {
     try {
-      console.log(`📥 [CREDITS] Loading page ${page}...`);
+      console.log(`📥 [CREDITS] Loading page ${page} with date filter: ${startDate} to ${endDate}...`);
       
       const offset = (page - 1) * itemsPerPage;
       
-      const { data, error } = await supabase
+      let query = supabase
         .from('credit_notes')
         .select('*')
-        .not('original_invoice_id', 'is', null)
+        .not('original_invoice_id', 'is', null);
+      
+      // Apply date range filter
+      if (startDate) {
+        query = query.gte('sale_order_date', startDate);
+      }
+      if (endDate) {
+        query = query.lte('sale_order_date', endDate);
+      }
+      
+      // Apply payment method filter
+      if (selectedPaymentMethod !== 'all') {
+        query = query.eq('payment_method_id', selectedPaymentMethod);
+      }
+      
+      const { data, error } = await query
         .order('credit_date', { ascending: sortOrder === 'asc' })
         .range(offset, offset + itemsPerPage - 1);
 
@@ -194,7 +224,7 @@ export default function InvoicesPage() {
   }, [currentPage]);
 
   // ============================================
-  // Reload When Sort Changes
+  // Reload When Sort or Filters Change
   // ============================================
   useEffect(() => {
     if (!loading && (invoices.length > 0 || credits.length > 0)) {
@@ -205,10 +235,10 @@ export default function InvoicesPage() {
         loadCredits(1)
       ]).then(() => {
         setLoading(false);
-        console.log('✅ [SORT] Reloaded with new sort');
+        console.log('✅ [FILTERS] Reloaded with new filters');
       });
     }
-  }, [sortField, sortOrder]);
+  }, [sortField, sortOrder, startDate, endDate, selectedPaymentMethod]);
 
   // ============================================
   // Calculate Credits Applied to Each Invoice
@@ -476,7 +506,7 @@ export default function InvoicesPage() {
 
         {/* Filters */}
         <div className="bg-white rounded-lg p-4 shadow-sm border border-gray-200 mb-6">
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-4">
             {/* Document Type */}
             <div>
               <label className="block text-sm font-medium mb-2">Document Type</label>
@@ -521,6 +551,30 @@ export default function InvoicesPage() {
                   </option>
                 ))}
               </select>
+            </div>
+          </div>
+          
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {/* Start Date */}
+            <div>
+              <label className="block text-sm font-medium mb-2">Start Date</label>
+              <input
+                type="date"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                className="w-full px-3 py-2 rounded-lg border border-gray-300 bg-white"
+              />
+            </div>
+
+            {/* End Date */}
+            <div>
+              <label className="block text-sm font-medium mb-2">End Date</label>
+              <input
+                type="date"
+                value={endDate}
+                onChange={(e) => setEndDate(e.target.value)}
+                className="w-full px-3 py-2 rounded-lg border border-gray-300 bg-white"
+              />
             </div>
 
             {/* Credits Filter */}
