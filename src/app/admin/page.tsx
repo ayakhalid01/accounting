@@ -52,7 +52,10 @@ export default function AdminPage() {
 
       console.log('✅ [ADMIN] Admin access granted:', session.user.email);
       
-      await loadUsers();
+      await Promise.all([
+        loadUsers(),
+        loadPendingDeposits()
+      ]);
       setLoading(false);
     };
 
@@ -71,6 +74,33 @@ export default function AdminPage() {
       console.log('✅ Loaded users:', data?.length);
     } catch (err: any) {
       console.error('❌ Error loading users:', err);
+    }
+  };
+
+  const loadPendingDeposits = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('deposits')
+        .select('*')
+        .eq('status', 'pending')
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+      // Map deposits to pendingDeductions format for compatibility
+      const mappedData = (data || []).map(deposit => ({
+        id: deposit.id,
+        invoice_id: deposit.id,
+        amount: deposit.net_amount,
+        reason: 'Pending deposit approval',
+        requested_by: deposit.imported_by || 'system',
+        requested_at: deposit.created_at,
+        status: 'pending',
+        invoice: deposit
+      }));
+      setPendingDeductions(mappedData);
+      console.log('✅ Loaded pending deposits:', mappedData.length);
+    } catch (err: any) {
+      console.error('❌ Error loading pending deposits:', err);
     }
   };
 
@@ -213,43 +243,17 @@ export default function AdminPage() {
         </div>
 
         {/* Stats Overview */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+        <div className="mb-8">
+          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 max-w-md">
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-gray-600">Pending Approvals</p>
                 <p className="text-3xl font-bold text-yellow-600 mt-1">
                   {pendingDeductions.length}
                 </p>
+                <p className="text-xs text-gray-500 mt-1">Deposits awaiting approval</p>
               </div>
               <Clock className="h-12 w-12 text-yellow-600 opacity-20" />
-            </div>
-          </div>
-
-          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-gray-600">Recent Activity</p>
-                <p className="text-3xl font-bold text-blue-600 mt-1">
-                  {auditLogs.length}
-                </p>
-              </div>
-              <FileText className="h-12 w-12 text-blue-600 opacity-20" />
-            </div>
-          </div>
-
-          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-gray-600">Total Actions Today</p>
-                <p className="text-3xl font-bold text-green-600 mt-1">
-                  {auditLogs.filter(log => {
-                    const today = new Date().toDateString();
-                    return new Date(log.timestamp).toDateString() === today;
-                  }).length}
-                </p>
-              </div>
-              <CheckCircle className="h-12 w-12 text-green-600 opacity-20" />
             </div>
           </div>
         </div>
@@ -382,7 +386,7 @@ export default function AdminPage() {
                   </table>
                 </div>
               </div>
-            )}
+            
           </div>
         </div>
       </main>
