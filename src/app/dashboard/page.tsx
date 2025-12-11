@@ -68,7 +68,7 @@ export default function DashboardPage() {
   const [periodType, setPeriodType] = useState<PeriodType>(savedFilters?.periodType || 'monthly');
   const [startDate, setStartDate] = useState<string>(savedFilters?.startDate || '');
   const [endDate, setEndDate] = useState<string>(savedFilters?.endDate || '');
-  const [selectedMethod, setSelectedMethod] = useState<string>(savedFilters?.selectedMethod || 'all');lters?.selectedMethod || 'all');
+  const [selectedMethod, setSelectedMethod] = useState<string>(savedFilters?.selectedMethod || 'all');savedFilters?.selectedMethod || 'all';
 
   // ============================================
   // Save Filters to localStorage

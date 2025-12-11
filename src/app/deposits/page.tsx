@@ -16,6 +16,9 @@ interface Deposit {
   total_amount: number;
   tax_amount: number;
   net_amount: number;
+  gap_covered?: number;
+  gap_uncovered?: number;
+  remaining_amount?: number;
   payment_method_id: string;
   payment_method_name: string;
   status: 'pending' | 'approved' | 'rejected';
@@ -72,7 +75,7 @@ export default function DepositsPage() {
   const [filterStartDate, setFilterStartDate] = useState(savedFilters?.filterStartDate || '');
   const [filterEndDate, setFilterEndDate] = useState(savedFilters?.filterEndDate || '');
   const [filterStatus, setFilterStatus] = useState<'all' | 'pending' | 'approved' | 'rejected'>(savedFilters?.filterStatus || 'all');
-  const [filterPaymentMethod, setFilterPaymentMethod] = useState(savedFilters?.filterPaymentMethod || 'all');lters?.filterPaymentMethod || 'all');
+  const [filterPaymentMethod, setFilterPaymentMethod] = useState(savedFilters?.filterPaymentMethod || 'all');savedFilters?.filterPaymentMethod || 'all';
   
   // ============================================
   // Save Filters to localStorage
@@ -783,6 +786,8 @@ export default function DepositsPage() {
                   <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Total</th>
                   <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Tax</th>
                   <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Net Amount</th>
+                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Gap Uncovered</th>
+                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Remaining</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Files</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
                   <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Actions</th>
@@ -791,7 +796,7 @@ export default function DepositsPage() {
               <tbody className="bg-white divide-y divide-gray-200">
                 {filteredDeposits.length === 0 ? (
                   <tr>
-                    <td colSpan={10} className="px-6 py-12 text-center text-gray-500">
+                    <td colSpan={12} className="px-6 py-12 text-center text-gray-500">
                       <Wallet className="mx-auto h-12 w-12 text-gray-300 mb-2" />
                       <p>No deposits found</p>
                     </td>
@@ -839,6 +844,18 @@ export default function DepositsPage() {
                         </td>
                         <td className="px-6 py-4 text-sm text-right font-semibold text-blue-600">
                           {deposit.net_amount.toLocaleString()} EGP
+                        </td>
+                        <td className="px-6 py-4 text-sm text-right text-red-600 font-medium">
+                          {deposit.status === 'approved' && deposit.gap_uncovered !== undefined ? 
+                            `${deposit.gap_uncovered.toLocaleString()} EGP` : 
+                            <span className="text-gray-400">-</span>
+                          }
+                        </td>
+                        <td className="px-6 py-4 text-sm text-right text-orange-600 font-medium">
+                          {deposit.status === 'approved' && deposit.remaining_amount !== undefined ? 
+                            `${deposit.remaining_amount.toLocaleString()} EGP` : 
+                            <span className="text-gray-400">-</span>
+                          }
                         </td>
                         <td className="px-6 py-4 text-sm">
                           {deposit.proof_files && deposit.proof_files.length > 0 ? (
@@ -908,7 +925,7 @@ export default function DepositsPage() {
                       {/* Expanded Row - File Preview */}
                       {expandedRow === deposit.id && (
                         <tr className="bg-gray-50">
-                          <td colSpan={9} className="px-6 py-4">
+                          <td colSpan={12} className="px-6 py-4">
                             <div className="space-y-4">
                               {deposit.notes && (
                                 <div>
