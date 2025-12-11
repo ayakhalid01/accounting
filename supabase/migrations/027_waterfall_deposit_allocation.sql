@@ -19,7 +19,7 @@ SET
   gap_uncovered = 0
 WHERE remaining_amount IS NULL;
 
--- 3. Create function for day-by-day waterfall allocation
+-- 3. Create function for day-by-day waterfall allocation (SIMPLE & CORRECT)
 CREATE OR REPLACE FUNCTION calculate_waterfall_allocation(
   p_start_date DATE,
   p_end_date DATE,
@@ -34,192 +34,105 @@ RETURNS TABLE (
 LANGUAGE plpgsql
 SECURITY INVOKER
 AS $$
+DECLARE
+  v_current_date DATE;
+  v_sales NUMERIC;
+  v_deposits_total NUMERIC;
+  v_used NUMERIC;
+  v_gap NUMERIC;
+  v_deposit RECORD;
+  v_to_use NUMERIC;
 BEGIN
-  RETURN QUERY
-  WITH RECURSIVE 
-  -- Get all dates in range
-  date_series AS (
-    SELECT generate_series(p_start_date, p_end_date, '1 day'::interval)::DATE as day
-  ),
-  -- Get daily sales (invoices - credits)
-  daily_sales AS (
-    SELECT 
-      ds.day,
-      COALESCE(
-        (SELECT SUM(i.amount_total) 
-         FROM invoices i 
-         WHERE i.state = 'posted' 
-           AND i.sale_order_date = ds.day
-           AND (p_payment_method_id IS NULL OR i.payment_method_id = p_payment_method_id)
-        ), 0
-      ) - COALESCE(
-        (SELECT SUM(ABS(c.amount_total)) 
-         FROM credit_notes c 
-         WHERE c.state = 'posted' 
-           AND c.original_invoice_id IS NOT NULL
-           AND c.sale_order_date = ds.day
-           AND (p_payment_method_id IS NULL OR c.payment_method_id = p_payment_method_id)
-        ), 0
-      ) as sales
-    FROM date_series ds
-  ),
-  -- Get approved deposits with their date ranges (FIFO order by start_date)
-  available_deposits AS (
-    SELECT 
-      d.id,
-      d.start_date,
-      d.end_date,
-      d.net_amount,
-      d.payment_method_id,
-      ROW_NUMBER() OVER (ORDER BY d.start_date, d.created_at) as deposit_order
-    FROM deposits d
-    WHERE d.status = 'approved'
-      AND d.start_date <= p_end_date
-      AND d.end_date >= p_start_date
-      AND (p_payment_method_id IS NULL OR d.payment_method_id = p_payment_method_id)
-  ),
-  -- Recursive CTE to allocate deposits day by day
-  daily_allocation AS (
-    -- Base case: First day
-    SELECT 
-      ds.day as allocation_date,
-      ds.sales as daily_sales,
-      LEAST(
-        ds.sales,
-        COALESCE(
-          (SELECT SUM(ad.net_amount) 
-           FROM available_deposits ad 
-           WHERE ad.start_date <= ds.day AND ad.end_date >= ds.day
-          ), 0
-        )
-      ) as deposits_used,
-      GREATEST(0, ds.sales - COALESCE(
-        (SELECT SUM(ad.net_amount) 
-         FROM available_deposits ad 
-         WHERE ad.start_date <= ds.day AND ad.end_date >= ds.day
-        ), 0
-      )) as daily_gap,
-      -- Track remaining balance per deposit
-      ARRAY(
-        SELECT jsonb_build_object(
-          'id', ad.id,
-          'remaining', 
-          CASE 
-            WHEN ad.start_date <= ds.day AND ad.end_date >= ds.day THEN
-              GREATEST(0, ad.net_amount - COALESCE(
-                (SELECT SUM(ds2.sales) 
-                 FROM daily_sales ds2 
-                 WHERE ds2.day <= ds.day 
-                   AND ds2.day >= ad.start_date
-                   AND ds2.day <= ad.end_date
-                ), 0
-              ))
-            ELSE ad.net_amount
-          END
-        )
-        FROM available_deposits ad
-        ORDER BY ad.deposit_order
-      ) as deposit_balances,
-      1 as day_number
-    FROM daily_sales ds
-    WHERE ds.day = p_start_date
-    
-    UNION ALL
-    
-    -- Recursive case: Process next day
-    SELECT 
-      ds.day,
-      ds.sales,
-      -- Calculate how much deposits can cover today
-      (
-        WITH deposit_usage AS (
-          SELECT 
-            ad.id,
-            ad.net_amount,
-            ad.deposit_order,
-            -- Get remaining from previous day
-            COALESCE(
-              (SELECT (elem->>'remaining')::NUMERIC 
-               FROM unnest(da.deposit_balances) elem 
-               WHERE (elem->>'id')::UUID = ad.id
-              ), ad.net_amount
-            ) as available_today
-          FROM available_deposits ad
-          WHERE ad.start_date <= ds.day AND ad.end_date >= ds.day
-          ORDER BY ad.deposit_order
-        ),
-        running_usage AS (
-          SELECT 
-            id,
-            available_today,
-            -- Running sum of sales covered by deposits so far
-            SUM(available_today) OVER (ORDER BY deposit_order) as cumulative_available
-          FROM deposit_usage
-        )
-        SELECT LEAST(ds.sales, COALESCE(MAX(cumulative_available), 0))
-        FROM running_usage
-      ) as deposits_used,
-      -- Gap is sales minus deposits used
-      ds.sales - (
-        WITH deposit_usage AS (
-          SELECT 
-            ad.id,
-            ad.net_amount,
-            ad.deposit_order,
-            COALESCE(
-              (SELECT (elem->>'remaining')::NUMERIC 
-               FROM unnest(da.deposit_balances) elem 
-               WHERE (elem->>'id')::UUID = ad.id
-              ), ad.net_amount
-            ) as available_today
-          FROM available_deposits ad
-          WHERE ad.start_date <= ds.day AND ad.end_date >= ds.day
-          ORDER BY ad.deposit_order
-        ),
-        running_usage AS (
-          SELECT 
-            id,
-            available_today,
-            SUM(available_today) OVER (ORDER BY deposit_order) as cumulative_available
-          FROM deposit_usage
-        )
-        SELECT LEAST(ds.sales, COALESCE(MAX(cumulative_available), 0))
-        FROM running_usage
-      ) as daily_gap,
-      -- Update balances for next iteration
-      ARRAY(
-        SELECT jsonb_build_object(
-          'id', ad.id,
-          'remaining', 
-          GREATEST(0, 
-            COALESCE(
-              (SELECT (elem->>'remaining')::NUMERIC 
-               FROM unnest(da.deposit_balances) elem 
-               WHERE (elem->>'id')::UUID = ad.id
-              ), ad.net_amount
-            ) - 
-            CASE 
-              WHEN ad.start_date <= ds.day AND ad.end_date >= ds.day 
-              THEN ds.sales 
-              ELSE 0 
-            END
-          )
-        )
-        FROM available_deposits ad
-        ORDER BY ad.deposit_order
-      ) as deposit_balances,
-      da.day_number + 1
-    FROM daily_allocation da
-    JOIN daily_sales ds ON ds.day = da.allocation_date + INTERVAL '1 day'
-    WHERE da.allocation_date < p_end_date
-  )
+  -- Create temp table to track deposit balances
+  CREATE TEMP TABLE IF NOT EXISTS deposit_tracker (
+    deposit_id UUID PRIMARY KEY,
+    remaining NUMERIC
+  ) ON COMMIT DROP;
+  
+  -- Initialize all approved deposits with their full amounts
+  INSERT INTO deposit_tracker (deposit_id, remaining)
   SELECT 
-    allocation_date,
-    daily_sales,
-    deposits_used,
-    daily_gap
-  FROM daily_allocation
-  ORDER BY allocation_date;
+    d.id,
+    d.net_amount
+  FROM deposits d
+  WHERE d.status = 'approved'
+    AND d.start_date <= p_end_date
+    AND d.end_date >= p_start_date
+    AND (p_payment_method_id IS NULL OR d.payment_method_id = p_payment_method_id)
+  ON CONFLICT (deposit_id) DO NOTHING;
+  
+  -- Loop through each day
+  v_current_date := p_start_date;
+  WHILE v_current_date <= p_end_date LOOP
+    
+    -- Calculate daily sales (invoices - credits)
+    SELECT 
+      COALESCE(SUM(i.amount_total), 0) - COALESCE(SUM(c.amount_total), 0)
+    INTO v_sales
+    FROM (
+      SELECT COALESCE(SUM(amount_total), 0) as amount_total
+      FROM invoices
+      WHERE state = 'posted'
+        AND sale_order_date = v_current_date
+        AND (p_payment_method_id IS NULL OR payment_method_id = p_payment_method_id)
+    ) i,
+    (
+      SELECT COALESCE(SUM(ABS(amount_total)), 0) as amount_total
+      FROM credit_notes
+      WHERE state = 'posted'
+        AND original_invoice_id IS NOT NULL
+        AND sale_order_date = v_current_date
+        AND (p_payment_method_id IS NULL OR payment_method_id = p_payment_method_id)
+    ) c;
+    
+    v_used := 0;
+    v_deposits_total := v_sales; -- Remaining to cover
+    
+    -- Use deposits in FIFO order (oldest first)
+    FOR v_deposit IN 
+      SELECT 
+        dt.deposit_id,
+        dt.remaining,
+        d.start_date,
+        d.end_date
+      FROM deposit_tracker dt
+      JOIN deposits d ON d.id = dt.deposit_id
+      WHERE dt.remaining > 0
+        AND d.start_date <= v_current_date
+        AND d.end_date >= v_current_date
+      ORDER BY d.start_date, d.created_at
+    LOOP
+      -- How much can we use from this deposit?
+      v_to_use := LEAST(v_deposit.remaining, v_deposits_total);
+      
+      IF v_to_use > 0 THEN
+        -- Use it
+        v_used := v_used + v_to_use;
+        v_deposits_total := v_deposits_total - v_to_use;
+        
+        -- Update balance
+        UPDATE deposit_tracker
+        SET remaining = remaining - v_to_use
+        WHERE deposit_id = v_deposit.deposit_id;
+      END IF;
+      
+      -- Stop if we covered all sales
+      EXIT WHEN v_deposits_total <= 0;
+    END LOOP;
+    
+    v_gap := GREATEST(0, v_sales - v_used);
+    
+    -- Return this day's result
+    RETURN QUERY SELECT 
+      v_current_date,
+      v_sales,
+      v_used,
+      v_gap;
+    
+    v_current_date := v_current_date + INTERVAL '1 day';
+  END LOOP;
+  
+  RETURN;
 END;
 $$;
 
