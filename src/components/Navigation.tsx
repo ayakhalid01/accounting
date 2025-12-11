@@ -47,7 +47,6 @@ export default function Navigation() {
     { href: '/invoices', label: 'Invoices', icon: FileText, adminOnly: false },
     { href: '/deposits', label: 'Deposits', icon: Wallet, adminOnly: false },
     { href: '/admin', label: 'Admin', icon: Users, adminOnly: true },
-    { href: '/settings', label: 'Settings', icon: Settings, adminOnly: false },
   ].filter(item => !item.adminOnly || isAdmin);
 
   return (

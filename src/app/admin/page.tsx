@@ -32,7 +32,7 @@ export default function AdminPage() {
   const [loading, setLoading] = useState(true);
   const [pendingDeductions, setPendingDeductions] = useState<PendingDeduction[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
-  const [activeTab, setActiveTab] = useState<'settings' | 'reports' | 'users'>('settings');
+  const [activeTab, setActiveTab] = useState<'users'>('users');
   const [processing, setProcessing] = useState<string | null>(null);
   const [users, setUsers] = useState<any[]>([]);
   const [newUserEmail, setNewUserEmail] = useState('');
@@ -254,190 +254,20 @@ export default function AdminPage() {
           </div>
         </div>
 
-        {/* Tabs */}
+        {/* User Management Section */}
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 mb-6">
           <div className="border-b border-gray-200">
             <nav className="flex -mb-px">
-              <button
-                onClick={() => setActiveTab('settings')}
-                className={`px-6 py-3 text-sm font-medium border-b-2 ${
-                  activeTab === 'settings'
-                    ? 'border-primary-600 text-primary-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                }`}
-              >
-                <Settings className="inline h-4 w-4 mr-2" />
-                System Settings
-              </button>
-              <button
-                onClick={() => setActiveTab('reports')}
-                className={`px-6 py-3 text-sm font-medium border-b-2 ${
-                  activeTab === 'reports'
-                    ? 'border-primary-600 text-primary-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                }`}
-              >
-                <FileText className="inline h-4 w-4 mr-2" />
-                Reports & Analytics
-              </button>
-              <button
-                onClick={() => setActiveTab('users')}
-                className={`px-6 py-3 text-sm font-medium border-b-2 ${
-                  activeTab === 'users'
-                    ? 'border-primary-600 text-primary-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                }`}
-              >
+              <div className="px-6 py-3 text-sm font-medium border-b-2 border-primary-600 text-primary-600">
                 <User className="inline h-4 w-4 mr-2" />
                 User Management
-              </button>
+              </div>
             </nav>
           </div>
 
           <div className="p-6">
-            {/* Settings Tab */}
-            {activeTab === 'settings' && (
-              <div className="space-y-6">
-                <h2 className="text-xl font-semibold text-gray-900 mb-4">System Configuration</h2>
-                
-                {/* Payment Methods Settings */}
-                <div className="border border-gray-200 rounded-lg p-6">
-                  <h3 className="text-lg font-medium text-gray-900 mb-4 flex items-center gap-2">
-                    <DollarSign className="h-5 w-5 text-primary-600" />
-                    Payment Methods Configuration
-                  </h3>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-2">
-                      <label className="block text-sm font-medium text-gray-700">Default Currency</label>
-                      <select className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500">
-                        <option>EGP - Egyptian Pound</option>
-                        <option>USD - US Dollar</option>
-                        <option>EUR - Euro</option>
-                      </select>
-                    </div>
-                    <div className="space-y-2">
-                      <label className="block text-sm font-medium text-gray-700">Tax Rate (%)</label>
-                      <input type="number" defaultValue="14" className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500" />
-                    </div>
-                    <div className="space-y-2">
-                      <label className="block text-sm font-medium text-gray-700">Default Payment Gateway</label>
-                      <select className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500">
-                        <option>Paymob</option>
-                        <option>Stripe</option>
-                        <option>Cash</option>
-                      </select>
-                    </div>
-                    <div className="space-y-2">
-                      <label className="block text-sm font-medium text-gray-700">Invoice Prefix</label>
-                      <input type="text" defaultValue="INV-" className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500" />
-                    </div>
-                  </div>
-                  <button className="mt-4 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700">
-                    Save Settings
-                  </button>
-                </div>
-
-                {/* Data Import Settings */}
-                <div className="border border-gray-200 rounded-lg p-6">
-                  <h3 className="text-lg font-medium text-gray-900 mb-4 flex items-center gap-2">
-                    <FileText className="h-5 w-5 text-primary-600" />
-                    Data Import Rules
-                  </h3>
-                  <div className="space-y-3">
-                    <label className="flex items-center gap-2">
-                      <input type="checkbox" defaultChecked className="rounded border-gray-300" />
-                      <span className="text-sm text-gray-700">Auto-group duplicate references</span>
-                    </label>
-                    <label className="flex items-center gap-2">
-                      <input type="checkbox" defaultChecked className="rounded border-gray-300" />
-                      <span className="text-sm text-gray-700">Skip credits without matching invoices</span>
-                    </label>
-                    <label className="flex items-center gap-2">
-                      <input type="checkbox" className="rounded border-gray-300" />
-                      <span className="text-sm text-gray-700">Auto-approve all imports</span>
-                    </label>
-                    <label className="flex items-center gap-2">
-                      <input type="checkbox" defaultChecked className="rounded border-gray-300" />
-                      <span className="text-sm text-gray-700">Validate payment gateway names</span>
-                    </label>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Reports Tab */}
-            {activeTab === 'reports' && (
-              <div className="space-y-6">
-                <h2 className="text-xl font-semibold text-gray-900 mb-4">Reports & Analytics</h2>
-                
-                {/* Summary Cards */}
-                <div className="grid grid-cols-3 gap-4">
-                  <div className="border border-gray-200 rounded-lg p-4 bg-blue-50">
-                    <p className="text-sm text-gray-600">Total Revenue (MTD)</p>
-                    <p className="text-2xl font-bold text-blue-600">2,450,000 EGP</p>
-                    <p className="text-xs text-gray-500 mt-1">↑ 15% from last month</p>
-                  </div>
-                  <div className="border border-gray-200 rounded-lg p-4 bg-green-50">
-                    <p className="text-sm text-gray-600">Total Invoices</p>
-                    <p className="text-2xl font-bold text-green-600">1,234</p>
-                    <p className="text-xs text-gray-500 mt-1">↑ 8% from last month</p>
-                  </div>
-                  <div className="border border-gray-200 rounded-lg p-4 bg-red-50">
-                    <p className="text-sm text-gray-600">Total Credits</p>
-                    <p className="text-2xl font-bold text-red-600">156,750 EGP</p>
-                    <p className="text-xs text-gray-500 mt-1">↓ 3% from last month</p>
-                  </div>
-                </div>
-
-                {/* Recent Activity Table */}
-                <div className="border border-gray-200 rounded-lg p-6">
-                  <h3 className="text-lg font-medium text-gray-900 mb-4">Recent Transactions</h3>
-                  <div className="overflow-x-auto">
-                    <table className="min-w-full divide-y divide-gray-200">
-                      <thead className="bg-gray-50">
-                        <tr>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Reference</th>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Type</th>
-                          <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Amount</th>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
-                        </tr>
-                      </thead>
-                      <tbody className="bg-white divide-y divide-gray-200">
-                        {[
-                          { date: '2025-12-10', ref: '#3443890', type: 'Invoice', amount: '1,299.99', status: 'Posted' },
-                          { date: '2025-12-10', ref: '#3443889', type: 'Invoice', amount: '1,299.99', status: 'Posted' },
-                          { date: '2025-12-10', ref: '#3443888', type: 'Invoice', amount: '6,018.95', status: 'Posted' },
-                          { date: '2025-12-09', ref: '#3393713', type: 'Credit', amount: '1,300.00', status: 'Posted' },
-                          { date: '2025-12-08', ref: '#3392915', type: 'Credit', amount: '845.00', status: 'Posted' },
-                        ].map((item, idx) => (
-                          <tr key={idx} className="hover:bg-gray-50">
-                            <td className="px-4 py-3 text-sm text-gray-900">{item.date}</td>
-                            <td className="px-4 py-3 text-sm font-medium text-gray-900">{item.ref}</td>
-                            <td className="px-4 py-3 text-sm">
-                              <span className={`px-2 py-1 text-xs rounded-full ${
-                                item.type === 'Invoice' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
-                              }`}>
-                                {item.type}
-                              </span>
-                            </td>
-                            <td className="px-4 py-3 text-sm text-right font-medium">{item.amount} EGP</td>
-                            <td className="px-4 py-3 text-sm">
-                              <span className="px-2 py-1 text-xs bg-blue-100 text-blue-800 rounded-full">{item.status}</span>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* User Management Tab */}
-            {activeTab === 'users' && (
-              <div className="space-y-6">
-                <h2 className="text-xl font-semibold text-gray-900 mb-4">User Management</h2>
+            {/* User Management Section */}
+            <div className="space-y-6">\
                 
                 {/* Add User Form */}
                 <div className="border border-gray-200 rounded-lg p-6 bg-gray-50">
