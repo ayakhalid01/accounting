@@ -1,27 +1,10 @@
 -- =====================================================
--- Migration 025: Optimize Dashboard Aggregations Performance
+-- Migration 033: Fix Dashboard Aggregations Date Logic
 -- =====================================================
--- Purpose: Add indexes and optimize aggregation function
--- Fix: statement timeout on large datasets
--- =====================================================
-
--- =====================================================
--- 1. Add Missing Indexes for Performance
+-- Purpose: Use same date filtering logic as frontend (inclusive)
+-- Change from BETWEEN to >= start AND < next_day
 -- =====================================================
 
--- Composite index for invoices query (covers all WHERE conditions)
-CREATE INDEX IF NOT EXISTS idx_invoices_aggregation 
-ON invoices(state, sale_order_date, payment_method_id)
-WHERE state = 'posted';
-
--- Composite index for credit_notes query
-CREATE INDEX IF NOT EXISTS idx_credits_aggregation 
-ON credit_notes(state, sale_order_date, payment_method_id, original_invoice_id)
-WHERE state = 'posted' AND original_invoice_id IS NOT NULL;
-
--- =====================================================
--- 2. Optimized Aggregation Function (Single Query)
--- =====================================================
 CREATE OR REPLACE FUNCTION get_dashboard_aggregations(
   p_start_date DATE,
   p_end_date DATE,
@@ -41,13 +24,15 @@ SECURITY INVOKER
 STABLE
 AS $$
   -- Single query with CTEs for better performance
+  -- Use >= start_date AND < (end_date + 1 day) for inclusive range
   WITH invoice_stats AS (
     SELECT 
       COALESCE(SUM(amount_total), 0) as total_amount,
       COUNT(*) as total_count
     FROM invoices
     WHERE state = 'posted'
-      AND sale_order_date::DATE BETWEEN p_start_date AND p_end_date
+      AND sale_order_date >= p_start_date
+      AND sale_order_date < (p_end_date + INTERVAL '1 day')
       AND (p_payment_method_id IS NULL OR payment_method_id = p_payment_method_id)
   ),
   credit_stats AS (
@@ -57,7 +42,8 @@ AS $$
     FROM credit_notes
     WHERE state = 'posted'
       AND original_invoice_id IS NOT NULL
-      AND sale_order_date::DATE BETWEEN p_start_date AND p_end_date
+      AND sale_order_date >= p_start_date
+      AND sale_order_date < (p_end_date + INTERVAL '1 day')
       AND (p_payment_method_id IS NULL OR payment_method_id = p_payment_method_id)
   ),
   deposit_stats AS (
@@ -83,25 +69,12 @@ $$;
 GRANT EXECUTE ON FUNCTION get_dashboard_aggregations(DATE, DATE, UUID) TO authenticated;
 
 -- =====================================================
--- 3. Analyze Tables for Query Planner
--- =====================================================
-ANALYZE invoices;
-ANALYZE credit_notes;
-ANALYZE deposits;
-
--- =====================================================
--- Performance Notes
+-- Test Query
 -- =====================================================
 -- 
--- Improvements:
--- 1. Composite indexes cover all WHERE conditions
--- 2. Partial indexes (WHERE clauses) reduce index size
--- 3. Changed from pl/pgsql to sql language (faster)
--- 4. Single query with CTEs instead of 7 subqueries
--- 5. BETWEEN instead of >= AND <= (uses index better)
--- 6. ANALYZE updates statistics for query planner
+-- Compare results with old BETWEEN logic:
+-- SELECT * FROM get_dashboard_aggregations('2025-12-08', '2025-12-10', 'b6510f6e-8d55-43ea-ab49-697867028814');
 -- 
--- Expected performance:
--- - Before: 30+ seconds (timeout)
--- - After: 1-3 seconds for 200K records
+-- Should now match frontend table sum exactly!
+-- 
 -- =====================================================

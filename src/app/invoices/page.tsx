@@ -85,65 +85,81 @@ export default function InvoicesPage() {
   const loadStatistics = async () => {
     try {
       console.log('📊 [STATS] Loading aggregations with filters...');
+      console.log('📊 [STATS] Filters:', { startDate, endDate, selectedPaymentMethod });
       
-      // Get aggregations (amounts)
+      // Calculate next day for inclusive range (gte start, lt next_day)
+      const nextDay = new Date(endDate);
+      nextDay.setDate(nextDay.getDate() + 1);
+      const nextDayStr = nextDay.toISOString().split('T')[0];
+      
+      // Use RPC function to get accurate aggregations
       const { data: aggData, error: aggError } = await supabase.rpc('get_dashboard_aggregations', {
         p_start_date: startDate,
         p_end_date: endDate,
         p_payment_method_id: selectedPaymentMethod === 'all' ? null : selectedPaymentMethod
       });
-      
+
       if (aggError) {
-        console.error('❌ [STATS] Aggregation Error:', aggError);
+        console.error('❌ [STATS] Aggregation error:', aggError);
         return;
       }
-      
-      // Get actual counts
-      let invoicesQuery = supabase
+
+      // Get counts separately (RPC returns wrong counts due to deposits join)
+      let invoicesCountQuery = supabase
         .from('invoices')
         .select('id', { count: 'exact', head: true })
         .eq('state', 'posted')
         .gte('sale_order_date', startDate)
-        .lte('sale_order_date', endDate);
+        .lt('sale_order_date', nextDayStr);
       
       if (selectedPaymentMethod !== 'all') {
-        invoicesQuery = invoicesQuery.eq('payment_method_id', selectedPaymentMethod);
+        invoicesCountQuery = invoicesCountQuery.eq('payment_method_id', selectedPaymentMethod);
       }
       
-      let creditsQuery = supabase
+      let creditsCountQuery = supabase
         .from('credit_notes')
         .select('id', { count: 'exact', head: true })
         .eq('state', 'posted')
         .not('original_invoice_id', 'is', null)
         .gte('sale_order_date', startDate)
-        .lte('sale_order_date', endDate);
+        .lt('sale_order_date', nextDayStr);
       
       if (selectedPaymentMethod !== 'all') {
-        creditsQuery = creditsQuery.eq('payment_method_id', selectedPaymentMethod);
+        creditsCountQuery = creditsCountQuery.eq('payment_method_id', selectedPaymentMethod);
       }
       
-      const [{ count: invoicesCount }, { count: creditsCount }] = await Promise.all([
-        invoicesQuery,
-        creditsQuery
+      const [
+        { count: invoicesCount },
+        { count: creditsCount }
+      ] = await Promise.all([
+        invoicesCountQuery,
+        creditsCountQuery
       ]);
+
+      const invoicesTotal = aggData?.[0]?.total_invoices_amount || 0;
+      const creditsTotal = aggData?.[0]?.total_credits_amount || 0;
+      const netAmount = aggData?.[0]?.net_sales || 0;
       
-      if (aggData && aggData.length > 0) {
-        setStatistics({
-          total_invoices_amount: aggData[0].total_invoices_amount,
-          total_credits_amount: aggData[0].total_credits_amount,
-          net_amount: aggData[0].net_sales,
-          total_invoices_count: invoicesCount || 0,
-          total_credits_count: creditsCount || 0,
-          last_updated: new Date().toISOString()
-        });
-        console.log('✅ [STATS] Loaded:', {
-          invoices_amount: aggData[0].total_invoices_amount,
-          invoices_count: invoicesCount,
-          credits_amount: aggData[0].total_credits_amount,
-          credits_count: creditsCount,
-          net: aggData[0].net_sales
-        });
-      }
+      console.log('📊 [STATS] From RPC - Invoices total:', invoicesTotal);
+      console.log('📊 [STATS] From count - Invoices count:', invoicesCount);
+      
+      setStatistics({
+        total_invoices_amount: invoicesTotal,
+        total_credits_amount: creditsTotal,
+        net_amount: netAmount,
+        total_invoices_count: invoicesCount || 0,
+        total_credits_count: creditsCount || 0,
+        last_updated: new Date().toISOString()
+      });
+      
+      console.log('✅ [STATS] Loaded:', {
+        invoices_amount: invoicesTotal,
+        invoices_count: invoicesCount,
+        credits_amount: creditsTotal,
+        credits_count: creditsCount,
+        net: netAmount
+      });
+      
     } catch (error) {
       console.error('❌ [STATS] Exception:', error);
     }
@@ -155,6 +171,7 @@ export default function InvoicesPage() {
   const loadInvoices = async (page: number = currentPage) => {
     try {
       console.log(`📥 [INVOICES] Loading page ${page} with date filter: ${startDate} to ${endDate}...`);
+      console.log(`📥 [INVOICES] Payment method: ${selectedPaymentMethod}`);
       
       const offset = (page - 1) * itemsPerPage;
       
@@ -163,14 +180,22 @@ export default function InvoicesPage() {
         .select(`
           *,
           payment_method:payment_methods(id, name_en)
-        `);
+        `)
+        .eq('state', 'posted');
       
       // Apply date range filter
+      // For TIMESTAMPTZ: gte uses start of day, lt uses start of next day (inclusive range)
       if (startDate) {
+        console.log(`📥 [INVOICES] Filtering: sale_order_date >= ${startDate}`);
         query = query.gte('sale_order_date', startDate);
       }
       if (endDate) {
-        query = query.lte('sale_order_date', endDate);
+        // Add 1 day and use lt (less than) to include all of end_date
+        const nextDay = new Date(endDate);
+        nextDay.setDate(nextDay.getDate() + 1);
+        const nextDayStr = nextDay.toISOString().split('T')[0];
+        console.log(`📥 [INVOICES] Filtering: sale_order_date < ${nextDayStr}`);
+        query = query.lt('sale_order_date', nextDayStr);
       }
       
       // Apply payment method filter
@@ -178,13 +203,18 @@ export default function InvoicesPage() {
         query = query.eq('payment_method_id', selectedPaymentMethod);
       }
       
+      console.log(`📥 [INVOICES] Executing query with offset ${offset}, limit ${itemsPerPage}...`);
       const { data, error } = await query
         .order('sale_order_date', { ascending: sortOrder === 'asc' })
         .range(offset, offset + itemsPerPage - 1);
 
-      if (error) throw error;
+      if (error) {
+        console.error('❌ [INVOICES] Query error:', error);
+        throw error;
+      }
       
-      console.log(`✅ [INVOICES] Loaded ${data?.length || 0} for page ${page}`);
+      console.log(`✅ [INVOICES] Loaded ${data?.length || 0} invoices for page ${page}`);
+      console.log(`✅ [INVOICES] First invoice:`, data?.[0]);
       setInvoices(data || []);
       
     } catch (error) {
@@ -208,14 +238,20 @@ export default function InvoicesPage() {
           *,
           payment_method:payment_methods(id, name_en)
         `)
+        .eq('state', 'posted')
         .not('original_invoice_id', 'is', null);
       
       // Apply date range filter
+      // For TIMESTAMPTZ: gte uses start of day, lt uses start of next day (inclusive range)
       if (startDate) {
         query = query.gte('sale_order_date', startDate);
       }
       if (endDate) {
-        query = query.lte('sale_order_date', endDate);
+        // Add 1 day and use lt (less than) to include all of end_date
+        const nextDay = new Date(endDate);
+        nextDay.setDate(nextDay.getDate() + 1);
+        const nextDayStr = nextDay.toISOString().split('T')[0];
+        query = query.lt('sale_order_date', nextDayStr);
       }
       
       // Apply payment method filter
@@ -386,13 +422,14 @@ export default function InvoicesPage() {
 
   // ============================================
   // Apply Filters (Client-Side, Current Page Only)
+  // NOTE: Date range and payment method are already filtered server-side!
   // ============================================
   const filteredData = useMemo(() => {
-    console.log('🔍 [FILTER] Applying filters...');
+    console.log('🔍 [FILTER] Applying client-side filters...');
     
     let filtered = combinedData;
 
-    // Search term
+    // Search term (client-side only)
     if (searchTerm) {
       const search = searchTerm.toLowerCase();
       filtered = filtered.filter(item => 
@@ -402,41 +439,28 @@ export default function InvoicesPage() {
       );
     }
 
-    // Date range
-    if (startDate) {
-      filtered = filtered.filter(item => new Date(item.date) >= new Date(startDate));
-    }
-    if (endDate) {
-      filtered = filtered.filter(item => new Date(item.date) <= new Date(endDate));
-    }
-
-    // Payment method
-    if (selectedPaymentMethod !== 'all') {
-      filtered = filtered.filter(item => 
-        item.payment_method_id?.toString() === selectedPaymentMethod
-      );
-    }
-
-    // Credits filter
+    // Credits filter (client-side only)
+    // Use has_credits flag that was calculated in invoicesWithCredits
     if (hasCreditsFilter === 'with_credits' && documentType !== 'credits') {
-      const invoicesWithCredits = new Set(
-        credits.map(cr => cr.original_invoice_id).filter(Boolean)
-      );
+      console.log('🔍 [FILTER] Filtering for invoices WITH credits...');
       filtered = filtered.filter(item => 
-        item.type === 'invoice' && invoicesWithCredits.has(item.id)
+        item.type === 'invoice' && item.has_credits === true
       );
+      console.log(`🔍 [FILTER] Found ${filtered.length} invoices with credits`);
     } else if (hasCreditsFilter === 'no_credits' && documentType !== 'credits') {
-      const invoicesWithCredits = new Set(
-        credits.map(cr => cr.original_invoice_id).filter(Boolean)
-      );
+      console.log('🔍 [FILTER] Filtering for invoices WITHOUT credits...');
+      const beforeFilter = filtered.length;
       filtered = filtered.filter(item => 
-        item.type === 'invoice' && !invoicesWithCredits.has(item.id)
+        item.type === 'invoice' && item.has_credits === false
       );
+      console.log(`🔍 [FILTER] Found ${filtered.length} invoices without credits (from ${beforeFilter} total)`);
+    } else {
+      console.log('🔍 [FILTER] No credits filter applied (showing all)');
     }
 
-    console.log('✅ [FILTER] Filtered:', filtered.length);
+    console.log('✅ [FILTER] Final filtered count:', filtered.length);
     return filtered;
-  }, [combinedData, searchTerm, startDate, endDate, selectedPaymentMethod, hasCreditsFilter, credits]);
+  }, [combinedData, searchTerm, hasCreditsFilter, documentType, credits]);
 
   // ============================================
   // Calculate Total Pages from Statistics
@@ -466,15 +490,21 @@ export default function InvoicesPage() {
   };
 
   // ============================================
-  // Download ALL Data as CSV (SERVER-SIDE - Much Better!)
+  // Download Filtered Data as CSV (SERVER-SIDE)
   // ============================================
   const downloadAllDataAsCSV = async () => {
     try {
-      console.log('📥 [CSV] Generating CSV on server...');
+      console.log('📥 [CSV] Generating filtered CSV on server...');
+      console.log('📥 [CSV] Filters:', { startDate, endDate, selectedPaymentMethod, documentType });
       setLoading(true);
 
-      // Call database function - returns ONE text string with ALL data
-      const { data, error } = await supabase.rpc('export_invoices_csv');
+      // Call database function with current filters
+      const { data, error } = await supabase.rpc('export_invoices_csv', {
+        p_start_date: startDate,
+        p_end_date: endDate,
+        p_payment_method_id: selectedPaymentMethod === 'all' ? null : selectedPaymentMethod,
+        p_document_type: documentType
+      });
 
       if (error) throw error;
 
@@ -493,10 +523,11 @@ export default function InvoicesPage() {
       const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
       const link = document.createElement('a');
       link.href = URL.createObjectURL(blob);
-      link.download = `all_invoices_credits_${new Date().toISOString().split('T')[0]}.csv`;
+      const filename = `invoices_credits_${startDate}_to_${endDate}_${new Date().toISOString().split('T')[0]}.csv`;
+      link.download = filename;
       link.click();
 
-      console.log(`✅ [CSV] Downloaded ${lineCount.toLocaleString()} records (server-generated)`);
+      console.log(`✅ [CSV] Downloaded ${lineCount.toLocaleString()} records (server-generated with filters)`);
       setLoading(false);
     } catch (error) {
       console.error('❌ [CSV] Error:', error);
@@ -583,7 +614,7 @@ export default function InvoicesPage() {
             className="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <Download className="w-4 h-4" />
-            Download All Data (CSV)
+            Download Filtered Data (CSV)
           </button>
         </div>
 
@@ -744,8 +775,7 @@ export default function InvoicesPage() {
                   <tr>
                     <th className="px-4 py-3 text-left text-sm font-medium">Type</th>
                     <th className="px-4 py-3 text-left text-sm font-medium">Number</th>
-                    <th className="px-4 py-3 text-left text-sm font-medium">Customer</th>
-                    <th className="px-4 py-3 text-left text-sm font-medium">Date</th>
+                    <th className="px-4 py-3 text-left text-sm font-medium">Sales Date</th>
                     <th className="px-4 py-3 text-right text-sm font-medium">Amount Total</th>
                     <th className="px-4 py-3 text-right text-sm font-medium">Credits Applied</th>
                     <th className="px-4 py-3 text-right text-sm font-medium">Net Amount</th>
@@ -772,9 +802,14 @@ export default function InvoicesPage() {
                         </div>
                       </td>
                       <td className="px-4 py-3 font-mono text-sm">{item.number}</td>
-                      <td className="px-4 py-3">{item.customer_name || '-'}</td>
                       <td className="px-4 py-3 text-sm text-gray-600">
-                        {new Date(item.date).toLocaleDateString()}
+                        {item.date ? (() => {
+                          const d = new Date(item.date);
+                          const year = d.getUTCFullYear();
+                          const month = String(d.getUTCMonth() + 1).padStart(2, '0');
+                          const day = String(d.getUTCDate()).padStart(2, '0');
+                          return `${day}/${month}/${year}`;
+                        })() : '-'}
                       </td>
                       <td className="px-4 py-3 text-right font-medium">
                         EGP {item.amount?.toLocaleString()}

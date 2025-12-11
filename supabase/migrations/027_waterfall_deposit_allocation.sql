@@ -19,7 +19,7 @@ SET
   gap_uncovered = 0
 WHERE remaining_amount IS NULL;
 
--- 3. OPTIMIZED: Pre-aggregate then allocate (much faster!)
+-- 3. TRUE WATERFALL: Running balance using RECURSIVE CTE
 CREATE OR REPLACE FUNCTION calculate_waterfall_allocation(
   p_start_date DATE,
   p_end_date DATE,
@@ -35,7 +35,7 @@ LANGUAGE sql
 SECURITY INVOKER
 STABLE
 AS $$
-  WITH 
+  WITH RECURSIVE
   -- Pre-aggregate invoices by day
   daily_invoices AS (
     SELECT 
@@ -59,55 +59,119 @@ AS $$
       AND (p_payment_method_id IS NULL OR payment_method_id = p_payment_method_id)
     GROUP BY sale_order_date
   ),
-  -- Get all dates with sales
-  date_series AS (
-    SELECT d::DATE as day
-    FROM generate_series(p_start_date, p_end_date, '1 day'::interval) d
-  ),
   -- Calculate daily net sales
-  daily_sales AS (
+  daily_sales_data AS (
     SELECT 
-      ds.day,
+      d::DATE as day,
+      ROW_NUMBER() OVER (ORDER BY d) as day_num,
       COALESCE(di.total, 0) - COALESCE(dc.total, 0) as sales
-    FROM date_series ds
-    LEFT JOIN daily_invoices di ON di.day = ds.day
-    LEFT JOIN daily_credits dc ON dc.day = ds.day
+    FROM generate_series(p_start_date, p_end_date, '1 day'::interval) d
+    LEFT JOIN daily_invoices di ON di.day = d::DATE
+    LEFT JOIN daily_credits dc ON dc.day = d::DATE
   ),
-  -- Get approved deposits (FIFO)
-  approved_deposits AS (
+  -- Get approved deposits (FIFO order)
+  deposits_list AS (
     SELECT 
       d.id,
       d.start_date,
       d.end_date,
       d.net_amount,
-      d.created_at,
-      ROW_NUMBER() OVER (ORDER BY d.start_date, d.created_at) as deposit_order
+      ROW_NUMBER() OVER (ORDER BY d.start_date, d.created_at) as seq
     FROM deposits d
     WHERE d.status = 'approved'
       AND d.start_date <= p_end_date
       AND d.end_date >= p_start_date
       AND (p_payment_method_id IS NULL OR d.payment_method_id = p_payment_method_id)
   ),
-  -- SIMPLE WATERFALL: Split deposit evenly across its period
-  -- This avoids complex recursion and is FAST
-  daily_deposit_allocation AS (
+  -- Recursive waterfall: track balance for each deposit
+  waterfall AS (
+    -- Base case: First day
     SELECT 
-      ds.day,
-      ds.sales,
-      COALESCE(SUM(
-        ad.net_amount / NULLIF(ad.end_date - ad.start_date + 1, 0)
-      ), 0) as daily_deposit_share
-    FROM daily_sales ds
-    LEFT JOIN approved_deposits ad 
-      ON ds.day BETWEEN ad.start_date AND ad.end_date
-    GROUP BY ds.day, ds.sales
+      dsd.day,
+      dsd.day_num,
+      dsd.sales,
+      -- Initial balances: deposits start with full amount if active on first day
+      (SELECT array_agg(
+        CASE 
+          WHEN dl.start_date <= dsd.day AND dl.end_date >= dsd.day 
+          THEN dl.net_amount 
+          ELSE 0 
+        END ORDER BY dl.seq
+      ) FROM deposits_list dl) as balances,
+      -- Use deposits FIFO to cover sales
+      LEAST(dsd.sales, 
+        COALESCE((
+          SELECT SUM(
+            CASE 
+              WHEN dl.start_date <= dsd.day AND dl.end_date >= dsd.day 
+              THEN dl.net_amount 
+              ELSE 0 
+            END
+          ) FROM deposits_list dl
+        ), 0)
+      ) as used
+    FROM daily_sales_data dsd
+    WHERE dsd.day_num = 1
+    
+    UNION ALL
+    
+    -- Recursive: Next days
+    SELECT 
+      dsd.day,
+      dsd.day_num,
+      dsd.sales,
+      -- Update balances after consuming from previous day
+      (SELECT array_agg(
+        GREATEST(0,
+          COALESCE(w.balances[dl.seq], 0) 
+          - CASE 
+              WHEN dl.start_date <= w.day AND dl.end_date >= w.day THEN
+                LEAST(w.sales, COALESCE(w.balances[dl.seq], 0))
+              ELSE 0
+            END
+          + CASE 
+              WHEN dl.start_date = dsd.day THEN dl.net_amount
+              ELSE 0
+            END
+        ) ORDER BY dl.seq
+      ) FROM deposits_list dl) as balances,
+      -- Use available balance to cover today's sales (FIFO)
+      (
+        WITH available AS (
+          SELECT 
+            dl.seq,
+            GREATEST(0,
+              COALESCE(w.balances[dl.seq], 0) 
+              - CASE 
+                  WHEN dl.start_date <= w.day AND dl.end_date >= w.day THEN
+                    LEAST(w.sales, COALESCE(w.balances[dl.seq], 0))
+                  ELSE 0
+                END
+              + CASE WHEN dl.start_date = dsd.day THEN dl.net_amount ELSE 0 END
+            ) as bal,
+            dl.start_date,
+            dl.end_date
+          FROM deposits_list dl
+          WHERE dl.start_date <= dsd.day AND dl.end_date >= dsd.day
+          ORDER BY dl.seq
+        ),
+        cumulative AS (
+          SELECT 
+            SUM(bal) OVER (ORDER BY seq) as running_total
+          FROM available
+        )
+        SELECT LEAST(dsd.sales, COALESCE(MAX(running_total), 0))
+        FROM cumulative
+      ) as used
+    FROM waterfall w
+    JOIN daily_sales_data dsd ON dsd.day_num = w.day_num + 1
   )
   SELECT 
     day as allocation_date,
     sales as daily_sales,
-    LEAST(sales, daily_deposit_share) as deposits_used,
-    GREATEST(0, sales - daily_deposit_share) as daily_gap
-  FROM daily_deposit_allocation
+    used as deposits_used,
+    GREATEST(0, sales - used) as daily_gap
+  FROM waterfall
   ORDER BY day;
 $$;
 
@@ -200,7 +264,8 @@ CREATE TRIGGER trigger_calculate_deposit_allocation
   FOR EACH ROW
   EXECUTE FUNCTION calculate_deposit_allocation();
 
--- 7. Update monthly aggregations to use waterfall
+-- 7. SUPER FAST: Simple proportional allocation (no waterfall for performance)
+-- For TRUE waterfall, use calculate_waterfall_allocation() separately for daily view
 CREATE OR REPLACE FUNCTION get_monthly_aggregations(
   p_start_date DATE,
   p_end_date DATE,
@@ -216,12 +281,10 @@ RETURNS TABLE (
   approved_deposits NUMERIC,
   pending_deposits NUMERIC
 )
-LANGUAGE plpgsql
+LANGUAGE sql
 SECURITY INVOKER
 STABLE
 AS $$
-BEGIN
-  RETURN QUERY
   WITH months AS (
     SELECT 
       DATE_TRUNC('month', d)::DATE as month_start,
@@ -253,20 +316,26 @@ BEGIN
       AND (p_payment_method_id IS NULL OR payment_method_id = p_payment_method_id)
     GROUP BY DATE_TRUNC('month', sale_order_date)
   ),
-  -- Use waterfall allocation for deposits
-  waterfall_deposits AS (
+  -- SIMPLE: Just sum approved deposits that overlap with each month
+  deposit_agg AS (
     SELECT 
-      DATE_TRUNC('month', allocation_date)::DATE as month,
-      SUM(deposits_used) as approved
-    FROM calculate_waterfall_allocation(p_start_date, p_end_date, p_payment_method_id)
-    GROUP BY DATE_TRUNC('month', allocation_date)
+      m.month_start,
+      SUM(CASE WHEN d.status = 'approved' THEN d.net_amount ELSE 0 END) as approved
+    FROM months m
+    LEFT JOIN deposits d ON 
+      d.start_date <= m.month_end 
+      AND d.end_date >= m.month_start
+      AND (p_payment_method_id IS NULL OR d.payment_method_id = p_payment_method_id)
+    GROUP BY m.month_start
   ),
   pending_deposits AS (
     SELECT 
       m.month_start,
       SUM(CASE WHEN d.status = 'pending' THEN d.net_amount ELSE 0 END) as pending
     FROM months m
-    LEFT JOIN deposits d ON d.start_date <= m.month_end AND d.end_date >= m.month_start
+    LEFT JOIN deposits d ON 
+      d.start_date <= m.month_end 
+      AND d.end_date >= m.month_start
       AND (p_payment_method_id IS NULL OR d.payment_method_id = p_payment_method_id)
     GROUP BY m.month_start
   )
@@ -277,15 +346,14 @@ BEGIN
     COALESCE(i.total, 0)::NUMERIC as total_invoices,
     COALESCE(c.total, 0)::NUMERIC as total_credits,
     (COALESCE(i.total, 0) - COALESCE(c.total, 0))::NUMERIC as net_sales,
-    COALESCE(wd.approved, 0)::NUMERIC as approved_deposits,
+    COALESCE(da.approved, 0)::NUMERIC as approved_deposits,
     COALESCE(pd.pending, 0)::NUMERIC as pending_deposits
   FROM months m
   LEFT JOIN invoice_agg i ON i.month = m.month_start
   LEFT JOIN credit_agg c ON c.month = m.month_start
-  LEFT JOIN waterfall_deposits wd ON wd.month = m.month_start
+  LEFT JOIN deposit_agg da ON da.month_start = m.month_start
   LEFT JOIN pending_deposits pd ON pd.month_start = m.month_start
   ORDER BY m.month_start;
-END;
 $$;
 
 GRANT EXECUTE ON FUNCTION get_monthly_aggregations(DATE, DATE, UUID) TO authenticated;

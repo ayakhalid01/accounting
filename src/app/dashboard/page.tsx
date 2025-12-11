@@ -94,13 +94,17 @@ export default function DashboardPage() {
         return;
       }
       
-      // Set default dates (current month)
-      const now = new Date();
-      const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
-      const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-      setStartDate(firstDay.toISOString().split('T')[0]);
-      setEndDate(lastDay.toISOString().split('T')[0]);
-      console.log('📅 Default date range:', firstDay.toISOString().split('T')[0], 'to', lastDay.toISOString().split('T')[0]);
+      // Set default dates ONLY if not already set from localStorage
+      if (!startDate || !endDate) {
+        const now = new Date();
+        const firstDay = new Date(now.getFullYear(), now.getMonth(), 1); // First day of current month
+        const today = new Date(); // Today (current day)
+        setStartDate(firstDay.toISOString().split('T')[0]);
+        setEndDate(today.toISOString().split('T')[0]);
+        console.log('📅 Default date range (current month to today):', firstDay.toISOString().split('T')[0], 'to', today.toISOString().split('T')[0]);
+      } else {
+        console.log('📅 Loaded saved filters:', startDate, 'to', endDate);
+      }
       
       await loadPaymentMethods();
       setLoading(false);
@@ -227,32 +231,93 @@ export default function DashboardPage() {
       // ============================================
       // STEP 3: Load period comparisons from database (accurate for all data)
       // ============================================
-      const { data: monthlyData, error: monthlyError } = await supabase.rpc('get_monthly_aggregations', {
-        p_start_date: startDate,
-        p_end_date: endDate,
-        p_payment_method_id: selectedMethod === 'all' ? null : selectedMethod
-      });
+      if (periodType === 'daily') {
+        // Use daily aggregations for day-by-day view
+        const { data: dailyData, error: dailyError } = await supabase.rpc('get_daily_aggregations', {
+          p_start_date: startDate,
+          p_end_date: endDate,
+          p_payment_method_id: selectedMethod === 'all' ? null : selectedMethod
+        });
 
-      if (monthlyError) {
-        console.error('❌ Monthly aggregations error:', monthlyError);
-        // Fallback to frontend calculation (limited data)
-        calculatePeriodComparisons(invoices || [], credits || [], deposits || []);
+        if (dailyError) {
+          console.error('❌ Daily aggregations error:', dailyError);
+          // Fallback to frontend calculation (limited data)
+          calculatePeriodComparisons(invoices || [], credits || [], deposits || []);
+        } else {
+          console.log('📊 [Database] Daily periods:', dailyData?.length || 0);
+          
+          // Convert database results to PeriodComparison format
+          const periods: PeriodComparison[] = (dailyData || []).map((day: any) => ({
+            period: new Date(day.allocation_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+            periodStart: day.allocation_date,
+            periodEnd: day.allocation_date,
+            sales: day.daily_sales,
+            approvedDeposits: day.approved_deposits,
+            pendingDeposits: day.pending_deposits,
+            gap: day.daily_gap,
+            gapAfterPending: day.daily_sales - day.approved_deposits - day.pending_deposits,
+          }));
+          
+          setPeriodComparisons(periods);
+        }
+      } else if (periodType === 'monthly') {
+        // Use monthly aggregations (grouped from daily data)
+        const { data: monthlyData, error: monthlyError } = await supabase.rpc('get_monthly_aggregations', {
+          p_start_date: startDate,
+          p_end_date: endDate,
+          p_payment_method_id: selectedMethod === 'all' ? null : selectedMethod
+        });
+
+        if (monthlyError) {
+          console.error('❌ Monthly aggregations error:', monthlyError);
+          // Fallback to frontend calculation (limited data)
+          calculatePeriodComparisons(invoices || [], credits || [], deposits || []);
+        } else {
+          console.log('📊 [Database] Monthly periods:', monthlyData?.length || 0);
+          
+          // Convert database results to PeriodComparison format
+          const periods: PeriodComparison[] = (monthlyData || []).map((month: any) => ({
+            period: new Date(month.month_start).toLocaleDateString('en-US', { month: 'short', year: 'numeric' }),
+            periodStart: month.month_start,
+            periodEnd: month.month_end,
+            sales: month.total_sales,
+            approvedDeposits: month.approved_deposits,
+            pendingDeposits: month.pending_deposits,
+            gap: month.gap,
+            gapAfterPending: month.total_sales - month.approved_deposits - month.pending_deposits,
+          }));
+          
+          setPeriodComparisons(periods);
+        }
       } else {
-        console.log('📊 [Database] Monthly periods:', monthlyData?.length || 0);
-        
-        // Convert database results to PeriodComparison format
-        const periods: PeriodComparison[] = (monthlyData || []).map((month: any) => ({
-          period: month.period_month,
-          periodStart: month.period_start,
-          periodEnd: month.period_end,
-          sales: month.net_sales,
-          approvedDeposits: month.approved_deposits,
-          pendingDeposits: month.pending_deposits,
-          gap: month.net_sales - month.approved_deposits,
-          gapAfterPending: month.net_sales - month.approved_deposits - month.pending_deposits,
-        }));
-        
-        setPeriodComparisons(periods);
+        // Use monthly aggregations
+        const { data: monthlyData, error: monthlyError } = await supabase.rpc('get_monthly_aggregations', {
+          p_start_date: startDate,
+          p_end_date: endDate,
+          p_payment_method_id: selectedMethod === 'all' ? null : selectedMethod
+        });
+
+        if (monthlyError) {
+          console.error('❌ Monthly aggregations error:', monthlyError);
+          // Fallback to frontend calculation (limited data)
+          calculatePeriodComparisons(invoices || [], credits || [], deposits || []);
+        } else {
+          console.log('📊 [Database] Monthly periods:', monthlyData?.length || 0);
+          
+          // Convert database results to PeriodComparison format
+          const periods: PeriodComparison[] = (monthlyData || []).map((month: any) => ({
+            period: month.period_month,
+            periodStart: month.period_start,
+            periodEnd: month.period_end,
+            sales: month.net_sales,
+            approvedDeposits: month.approved_deposits,
+            pendingDeposits: month.pending_deposits,
+            gap: month.net_sales - month.approved_deposits,
+            gapAfterPending: month.net_sales - month.approved_deposits - month.pending_deposits,
+          }));
+          
+          setPeriodComparisons(periods);
+        }
       }
     } catch (err) {
       console.error('❌ Error loading dashboard data:', err);
