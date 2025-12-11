@@ -40,6 +40,17 @@ export default function DashboardPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
   
+  // ============================================
+  // Load Saved Filters from localStorage
+  // ============================================
+  const getSavedFilters = () => {
+    if (typeof window === 'undefined') return null;
+    const saved = localStorage.getItem('dashboard_filters');
+    return saved ? JSON.parse(saved) : null;
+  };
+  
+  const savedFilters = getSavedFilters();
+  
   const [stats, setStats] = useState<DashboardStats>({
     totalSales: 0,
     approvedDepositsAmount: 0,
@@ -53,11 +64,26 @@ export default function DashboardPage() {
   const [periodComparisons, setPeriodComparisons] = useState<PeriodComparison[]>([]);
   const [paymentMethods, setPaymentMethods] = useState<any[]>([]);
   
-  // Filters
-  const [periodType, setPeriodType] = useState<PeriodType>('monthly');
-  const [startDate, setStartDate] = useState<string>('');
-  const [endDate, setEndDate] = useState<string>('');
-  const [selectedMethod, setSelectedMethod] = useState<string>('all');
+  // Filters - Restored from localStorage
+  const [periodType, setPeriodType] = useState<PeriodType>(savedFilters?.periodType || 'monthly');
+  const [startDate, setStartDate] = useState<string>(savedFilters?.startDate || '');
+  const [endDate, setEndDate] = useState<string>(savedFilters?.endDate || '');
+  const [selectedMethod, setSelectedMethod] = useState<string>(savedFilters?.selectedMethod || 'all');lters?.selectedMethod || 'all');
+
+  // ============================================
+  // Save Filters to localStorage
+  // ============================================
+  useEffect(() => {
+    if (startDate && endDate) { // Only save if dates are set
+      const filtersToSave = {
+        periodType,
+        startDate,
+        endDate,
+        selectedMethod
+      };
+      localStorage.setItem('dashboard_filters', JSON.stringify(filtersToSave));
+    }
+  }, [periodType, startDate, endDate, selectedMethod]);
 
   useEffect(() => {
     const checkAuthAndLoadData = async () => {

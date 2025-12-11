@@ -24,6 +24,17 @@ export default function InvoicesPage() {
   const router = useRouter();
   
   // ============================================
+  // Load Saved Filters from localStorage
+  // ============================================
+  const getSavedFilters = () => {
+    if (typeof window === 'undefined') return null;
+    const saved = localStorage.getItem('invoices_filters');
+    return saved ? JSON.parse(saved) : null;
+  };
+  
+  const savedFilters = getSavedFilters();
+  
+  // ============================================
   // State - Only Current Page Data
   // ============================================
   const [loading, setLoading] = useState(true);
@@ -33,22 +44,39 @@ export default function InvoicesPage() {
   // Statistics from database view (ALL data, instant)
   const [statistics, setStatistics] = useState<DashboardStatistics | null>(null);
   
-  // Filters
-  const [documentType, setDocumentType] = useState<DocumentType>('all');
-  const [searchTerm, setSearchTerm] = useState('');
-  const [startDate, setStartDate] = useState('2025-11-01'); // Default start date
-  const [endDate, setEndDate] = useState('2025-12-31'); // Default end date
-  const [selectedPaymentMethod, setSelectedPaymentMethod] = useState('all');
-  const [hasCreditsFilter, setHasCreditsFilter] = useState<'all' | 'with_credits' | 'no_credits'>('all');
+  // Filters - Restored from localStorage
+  const [documentType, setDocumentType] = useState<DocumentType>(savedFilters?.documentType || 'all');
+  const [searchTerm, setSearchTerm] = useState(savedFilters?.searchTerm || '');
+  const [startDate, setStartDate] = useState(savedFilters?.startDate || '2025-11-01');
+  const [endDate, setEndDate] = useState(savedFilters?.endDate || '2025-12-31');
+  const [selectedPaymentMethod, setSelectedPaymentMethod] = useState(savedFilters?.selectedPaymentMethod || 'all');
+  const [hasCreditsFilter, setHasCreditsFilter] = useState<'all' | 'with_credits' | 'no_credits'>(savedFilters?.hasCreditsFilter || 'all');
   const [paymentMethods, setPaymentMethods] = useState<any[]>([]);
   
-  // Sort
-  const [sortField, setSortField] = useState<'sale_order_date' | 'amount_total'>('sale_order_date');
-  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
+  // Sort - Restored from localStorage
+  const [sortField, setSortField] = useState<'sale_order_date' | 'amount_total'>(savedFilters?.sortField || 'sale_order_date');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>(savedFilters?.sortOrder || 'desc');
   
   // Pagination
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage] = useState(1000); // Load 1000 per page
+
+  // ============================================
+  // Save Filters to localStorage
+  // ============================================
+  useEffect(() => {
+    const filtersToSave = {
+      documentType,
+      searchTerm,
+      startDate,
+      endDate,
+      selectedPaymentMethod,
+      hasCreditsFilter,
+      sortField,
+      sortOrder
+    };
+    localStorage.setItem('invoices_filters', JSON.stringify(filtersToSave));
+  }, [documentType, searchTerm, startDate, endDate, selectedPaymentMethod, hasCreditsFilter, sortField, sortOrder]);
 
   // ============================================
   // Load Statistics with Filters (All Users See All Data)

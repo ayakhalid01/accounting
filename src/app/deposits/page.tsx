@@ -46,6 +46,17 @@ export default function DepositsPage() {
   const [expandedRow, setExpandedRow] = useState<string | null>(null);
   const [editingDeposit, setEditingDeposit] = useState<Deposit | null>(null);
   
+  // ============================================
+  // Load Saved Filters from localStorage
+  // ============================================
+  const getSavedFilters = () => {
+    if (typeof window === 'undefined') return null;
+    const saved = localStorage.getItem('deposits_filters');
+    return saved ? JSON.parse(saved) : null;
+  };
+  
+  const savedFilters = getSavedFilters();
+  
   // Form state
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
@@ -57,11 +68,24 @@ export default function DepositsPage() {
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
   const [submitting, setSubmitting] = useState(false);
   
-  // Filters
-  const [filterStartDate, setFilterStartDate] = useState('');
-  const [filterEndDate, setFilterEndDate] = useState('');
-  const [filterStatus, setFilterStatus] = useState<'all' | 'pending' | 'approved' | 'rejected'>('all');
-  const [filterPaymentMethod, setFilterPaymentMethod] = useState('all');
+  // Filters - Restored from localStorage
+  const [filterStartDate, setFilterStartDate] = useState(savedFilters?.filterStartDate || '');
+  const [filterEndDate, setFilterEndDate] = useState(savedFilters?.filterEndDate || '');
+  const [filterStatus, setFilterStatus] = useState<'all' | 'pending' | 'approved' | 'rejected'>(savedFilters?.filterStatus || 'all');
+  const [filterPaymentMethod, setFilterPaymentMethod] = useState(savedFilters?.filterPaymentMethod || 'all');lters?.filterPaymentMethod || 'all');
+  
+  // ============================================
+  // Save Filters to localStorage
+  // ============================================
+  useEffect(() => {
+    const filtersToSave = {
+      filterStartDate,
+      filterEndDate,
+      filterStatus,
+      filterPaymentMethod
+    };
+    localStorage.setItem('deposits_filters', JSON.stringify(filtersToSave));
+  }, [filterStartDate, filterEndDate, filterStatus, filterPaymentMethod]);
   
   // Modal states
   const [modalImage, setModalImage] = useState<string | null>(null);
