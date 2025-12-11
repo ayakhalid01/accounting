@@ -290,7 +290,7 @@ export default function InvoicesPage() {
   // Load New Page When Page Changes
   // ============================================
   useEffect(() => {
-    if (currentPage > 1) {
+    if (currentPage > 1 && !loading) {
       setLoading(true);
       Promise.all([
         loadInvoices(currentPage),
@@ -303,11 +303,14 @@ export default function InvoicesPage() {
   }, [currentPage]);
 
   // ============================================
-  // Reload When Sort or Filters Change
+  // Reload When Sort or Filters Change (including itemsPerPage)
   // ============================================
   useEffect(() => {
-    if (!loading && (invoices.length > 0 || credits.length > 0)) {
-      setCurrentPage(1);
+    if (!loading && invoices.length > 0) {
+      // Reset to page 1 and reload
+      if (currentPage !== 1) {
+        setCurrentPage(1);
+      }
       setLoading(true);
       Promise.all([
         loadInvoices(1),
