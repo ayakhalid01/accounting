@@ -192,7 +192,10 @@ export default function UploadsPage() {
   const MS_PER_DAY = 86400000; // 24 * 60 * 60 * 1000
   
   const parseDate = (dateStr: string): string => {
-    if (!dateStr) return new Date().toISOString();
+    if (!dateStr) {
+      const now = new Date();
+      return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    }
     
     const dateKey = dateStr.toString();
     
@@ -208,31 +211,61 @@ export default function UploadsPage() {
       const numericDate = parseFloat(dateValue);
       if (!isNaN(numericDate) && numericDate > 40000 && numericDate < 60000) {
         // Excel date serial number (days since 1900-01-01)
-        const days = Math.floor(numericDate) - 2; // -2 to account for Excel's leap year bug
-        const milliseconds = (numericDate - Math.floor(numericDate)) * MS_PER_DAY;
-        const timestamp = EXCEL_EPOCH_MS + (days * MS_PER_DAY) + milliseconds;
-        const result = new Date(timestamp).toISOString();
+        // Convert to date WITHOUT timezone conversion
+        const days = Math.floor(numericDate);
+        const excelEpoch = new Date(Date.UTC(1900, 0, 1)); // Use UTC
+        const daysSince1900 = days - 2; // Account for Excel's leap year bug
+        const resultDate = new Date(excelEpoch.getTime() + (daysSince1900 * MS_PER_DAY));
+        
+        // Build date string in YYYY-MM-DD format using UTC methods
+        const year = resultDate.getUTCFullYear();
+        const month = String(resultDate.getUTCMonth() + 1).padStart(2, '0');
+        const day = String(resultDate.getUTCDate()).padStart(2, '0');
+        const result = `${year}-${month}-${day}`;
+        
+        console.log(`📅 Excel serial ${numericDate} → ${result}`);
         dateCache.set(dateKey, result);
         return result;
       }
       
-      // Handle text date format "2025-09-30 14:28:28" or "2025-09-30"
-      const cleanDate = dateValue.includes(' ') ? dateValue.split(' ')[0] : dateValue;
-      const date = new Date(cleanDate);
+      // Handle text date format "2025-09-30 14:28:28" or "2025-09-30" or "10/12/2025"
+      let cleanDate = dateValue.includes(' ') ? dateValue.split(' ')[0] : dateValue;
       
-      if (isNaN(date.getTime())) {
-        const now = new Date().toISOString();
-        dateCache.set(dateKey, now);
-        return now;
+      // Handle DD/MM/YYYY format
+      if (cleanDate.includes('/')) {
+        const parts = cleanDate.split('/');
+        if (parts.length === 3) {
+          const day = parts[0].padStart(2, '0');
+          const month = parts[1].padStart(2, '0');
+          const year = parts[2];
+          const result = `${year}-${month}-${day}`;
+          dateCache.set(dateKey, result);
+          return result;
+        }
       }
       
-      const result = date.toISOString();
+      // Try parsing as ISO date (YYYY-MM-DD)
+      const date = new Date(cleanDate + 'T00:00:00Z'); // Force UTC
+      
+      if (isNaN(date.getTime())) {
+        const now = new Date();
+        const result = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+        dateCache.set(dateKey, result);
+        return result;
+      }
+      
+      // Use UTC methods to avoid timezone conversion
+      const year = date.getUTCFullYear();
+      const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+      const day = String(date.getUTCDate()).padStart(2, '0');
+      const result = `${year}-${month}-${day}`;
       dateCache.set(dateKey, result);
       return result;
     } catch (err) {
-      const now = new Date().toISOString();
-      dateCache.set(dateKey, now);
-      return now;
+      const now = new Date();
+      const result = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+      dateCache.set(dateKey, result);
+      return result;
     }
   };
 
@@ -631,12 +664,19 @@ export default function UploadsPage() {
                 if (credit) {
                   const recordIdx = credit.tempId;
                   recordsToInsert[recordIdx].original_invoice_id = match.invoice_id;
+                  
+                  // IMPORTANT: Use invoice's sale_order_date for the credit
+                  if (match.invoice_sale_order_date) {
+                    recordsToInsert[recordIdx].sale_order_date = match.invoice_sale_order_date;
+                    console.log(`📅 Credit ${credit.reference} inherits date ${match.invoice_sale_order_date} from invoice ${match.invoice_number}`);
+                  }
+                  
                   matchedCount++;
                   appliedMatches++;
                   
                   // Log first 5 matches in detail
                   if (appliedMatches <= 5) {
-                    console.log(`✅ ${match.match_type}: ${credit.reference} (${credit.gateway_name}) → ${match.invoice_number}`);
+                    console.log(`✅ ${match.match_type}: ${credit.reference} (${credit.gateway_name}) → ${match.invoice_number} (date: ${match.invoice_sale_order_date})`);
                   }
                 } else {
                   console.warn(`⚠️ Could not find credit for temp ID ${tempId}`);

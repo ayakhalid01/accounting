@@ -24,15 +24,15 @@ SECURITY INVOKER
 STABLE
 AS $$
   -- Single query with CTEs for better performance
-  -- Use >= start_date AND < (end_date + 1 day) for inclusive range
+  -- Use ::DATE cast for exact date comparison (same as invoices page frontend)
   WITH invoice_stats AS (
     SELECT 
       COALESCE(SUM(amount_total), 0) as total_amount,
       COUNT(*) as total_count
     FROM invoices
     WHERE state = 'posted'
-      AND sale_order_date >= p_start_date
-      AND sale_order_date < (p_end_date + INTERVAL '1 day')
+      AND sale_order_date::DATE >= p_start_date
+      AND sale_order_date::DATE <= p_end_date
       AND (p_payment_method_id IS NULL OR payment_method_id = p_payment_method_id)
   ),
   credit_stats AS (
@@ -42,8 +42,8 @@ AS $$
     FROM credit_notes
     WHERE state = 'posted'
       AND original_invoice_id IS NOT NULL
-      AND sale_order_date >= p_start_date
-      AND sale_order_date < (p_end_date + INTERVAL '1 day')
+      AND sale_order_date::DATE >= p_start_date
+      AND sale_order_date::DATE <= p_end_date
       AND (p_payment_method_id IS NULL OR payment_method_id = p_payment_method_id)
   ),
   deposit_stats AS (
