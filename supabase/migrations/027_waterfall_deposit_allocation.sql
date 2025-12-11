@@ -291,11 +291,11 @@ BEGIN
     -- How much can this deposit cover?
     v_gap_covered := LEAST(NEW.net_amount, v_total_gap);
     
-    -- Gap uncovered = Total gap - what this deposit can cover
-    v_gap_uncovered := GREATEST(0, v_total_gap - NEW.net_amount);
+    -- Gap uncovered = Total gap - what this deposit actually covered
+    v_gap_uncovered := GREATEST(0, v_total_gap - v_gap_covered);
     
     -- Remaining = deposit amount - gap covered
-    NEW.remaining_amount := GREATEST(0, NEW.net_amount - v_total_gap);
+    NEW.remaining_amount := GREATEST(0, NEW.net_amount - v_gap_covered);
     NEW.gap_covered := v_gap_covered;
     NEW.gap_uncovered := v_gap_uncovered;
     
