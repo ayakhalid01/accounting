@@ -124,11 +124,7 @@ export default function DashboardPage() {
   // Apply Filters (only when user clicks Apply button)
   // ============================================
   const handleApplyFilters = async () => {
-    setAppliedStartDate(startDate);
-    setAppliedEndDate(endDate);
-    setAppliedMethod(selectedMethod);
-    setAppliedPeriodType(periodType);
-    setCurrentPage(1); // Reset pagination when filters change
+    console.log('✅ [DASHBOARD] Applying filters. Current payment method:', selectedMethod);
     
     // Save to localStorage
     const filtersToSave = {
@@ -139,10 +135,31 @@ export default function DashboardPage() {
     };
     localStorage.setItem('dashboard_filters', JSON.stringify(filtersToSave));
     
-    // Directly load data with new applied filters
+    // IMPORTANT: Clear old data before loading new data
+    console.log('🗑️ [DASHBOARD] Clearing old data...');
+    setPeriodComparisons([]);
+    setStats({
+      totalSales: 0,
+      approvedDepositsAmount: 0,
+      pendingDepositsAmount: 0,
+      approvedDepositsCount: 0,
+      pendingDepositsCount: 0,
+      gapAmount: 0,
+      gapAfterPending: 0,
+    });
+    
+    // IMPORTANT: Update applied filters with NEW values (not waiting for state update)
+    setAppliedStartDate(startDate);
+    setAppliedEndDate(endDate);
+    setAppliedMethod(selectedMethod);
+    setAppliedPeriodType(periodType);
+    setCurrentPage(1); // Reset pagination when filters change
+    
+    // Load data directly with new filter values (not from state which updates asynchronously)
     setLoading(true);
     try {
-      await loadDashboardData();
+      await loadDashboardDataWithFilters(startDate, endDate, selectedMethod, periodType);
+      console.log('✅ [DASHBOARD] Data loaded successfully for payment method:', selectedMethod);
     } finally {
       setLoading(false);
     }
@@ -253,9 +270,211 @@ export default function DashboardPage() {
     }
   };
 
+  // ============================================
+  // Load Dashboard Data WITH Custom Filters (for Apply Filters button)
+  // ============================================
+  const loadDashboardDataWithFilters = async (
+    filterStartDate: string,
+    filterEndDate: string,
+    filterMethod: string,
+    filterPeriodType: PeriodType
+  ) => {
+    try {
+      console.log('🔍 Loading data with filters:', { filterStartDate, filterEndDate, filterMethod, filterPeriodType });
+      console.log('🔄 [DASHBOARD] Starting data load for payment method:', filterMethod);
+      
+      // ============================================
+      // STEP 1: Get accurate totals from database (bypasses 1000 limit)
+      // ============================================
+      const { data: aggregations, error: aggError } = await supabase.rpc('get_dashboard_aggregations', {
+        p_start_date: filterStartDate,
+        p_end_date: filterEndDate,
+        p_payment_method_id: filterMethod === 'all' ? null : filterMethod
+      });
+
+      if (aggError) {
+        console.error('❌ Aggregations error:', aggError);
+      }
+
+      console.log('📊 [Database] Total invoices:', aggregations?.[0]?.total_invoices_count || 0, 'Amount:', aggregations?.[0]?.total_invoices_amount || 0);
+      console.log('📊 [Database] Total credits:', aggregations?.[0]?.total_credits_count || 0, 'Amount:', aggregations?.[0]?.total_credits_amount || 0);
+      console.log('💰 [Database] Net Sales:', aggregations?.[0]?.net_sales || 0);
+      console.log('📊 [Database] Total deposits:', aggregations?.[0]?.total_deposits_count || 0, 'Amount:', aggregations?.[0]?.total_deposits_amount || 0);
+
+      // ============================================
+      // STEP 2: Load detailed data for period comparisons (still limited to 1000)
+      // ============================================
+      // Build query filters - Get invoices
+      let invoicesQuery = supabase
+        .from('invoices')
+        .select('amount_total, sale_order_date, payment_method_id')
+        .eq('state', 'posted')
+        .gte('sale_order_date', filterStartDate)
+        .lte('sale_order_date', filterEndDate);
+
+      // Get credits from credit_notes table
+      let creditsQuery = supabase
+        .from('credit_notes')
+        .select('amount_total, sale_order_date, payment_method_id, original_invoice_id')
+        .eq('state', 'posted')
+        .not('original_invoice_id', 'is', null)
+        .gte('sale_order_date', filterStartDate)
+        .lte('sale_order_date', filterEndDate);
+
+      let depositsQuery = supabase
+        .from('deposits')
+        .select('net_amount, status, start_date, end_date, payment_method_id')
+        .or(`and(start_date.lte.${filterEndDate},end_date.gte.${filterStartDate})`);
+
+      // Filter by payment method if selected
+      if (filterMethod !== 'all') {
+        invoicesQuery = invoicesQuery.eq('payment_method_id', filterMethod);
+        creditsQuery = creditsQuery.eq('payment_method_id', filterMethod);
+        depositsQuery = depositsQuery.eq('payment_method_id', filterMethod);
+      }
+
+      const [{ data: invoices, error: invError }, { data: credits, error: crError }, { data: deposits }] = await Promise.all([
+        invoicesQuery,
+        creditsQuery,
+        depositsQuery
+      ]);
+
+      if (invError) console.error('❌ Invoices error:', invError);
+      if (crError) console.error('❌ Credits error:', crError);
+
+      console.log('📊 [Frontend] Loaded invoices for charts:', invoices?.length || 0);
+      console.log('📊 [Frontend] Loaded credits for charts:', credits?.length || 0);
+      console.log('📊 [Frontend] Loaded deposits for charts:', deposits?.length || 0);
+
+      // Use DATABASE totals for stats (accurate)
+      const totalInvoices = aggregations?.[0]?.total_invoices_amount || 0;
+      const totalCredits = aggregations?.[0]?.total_credits_amount || 0;
+      const netSales = aggregations?.[0]?.net_sales || 0;
+
+      // Calculate deposits from database aggregation
+      const totalDeposits = aggregations?.[0]?.total_deposits_amount || 0;
+
+      // Use loaded data for deposits breakdown (approved vs pending)
+      const approvedDeposits = deposits?.filter(d => d.status === 'approved') || [];
+      const pendingDeposits = deposits?.filter(d => d.status === 'pending') || [];
+      
+      const approvedDepositsAmount = approvedDeposits.reduce((sum, d) => sum + d.net_amount, 0);
+      const pendingDepositsAmount = pendingDeposits.reduce((sum, d) => sum + d.net_amount, 0);
+      
+      const gapAmount = netSales - approvedDepositsAmount;
+      const gapAfterPending = netSales - approvedDepositsAmount - pendingDepositsAmount;
+
+      setStats({
+        totalSales: netSales,  // Use database total
+        approvedDepositsAmount,
+        pendingDepositsAmount,
+        approvedDepositsCount: approvedDeposits.length,
+        pendingDepositsCount: pendingDeposits.length,
+        gapAmount,
+        gapAfterPending,
+      });
+
+      // ============================================
+      // STEP 3: Load period comparisons from database (accurate for all data)
+      // ============================================
+      if (filterPeriodType === 'daily') {
+        // Use daily aggregations for day-by-day view
+        const { data: dailyData, error: dailyError } = await supabase.rpc('get_daily_aggregations', {
+          p_start_date: filterStartDate,
+          p_end_date: filterEndDate,
+          p_payment_method_id: filterMethod === 'all' ? null : filterMethod
+        });
+
+        if (dailyError) {
+          console.error('❌ Daily aggregations error:', dailyError);
+          // Fallback to frontend calculation (limited data)
+          calculatePeriodComparisonsWithFilters(invoices || [], credits || [], deposits || [], filterStartDate, filterEndDate, filterPeriodType);
+        } else {
+          console.log('📊 [Database] Daily periods:', dailyData?.length || 0);
+          
+          // Convert database results to PeriodComparison format
+          const periods: PeriodComparison[] = (dailyData || []).map((day: any) => ({
+            period: new Date(day.allocation_date).toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' }),
+            periodStart: day.allocation_date,
+            periodEnd: day.allocation_date,
+            sales: day.daily_sales,
+            approvedDeposits: day.approved_deposits,
+            pendingDeposits: day.pending_deposits,
+            gap: day.daily_gap,
+            gapAfterPending: day.daily_sales - day.approved_deposits - day.pending_deposits,
+          }));
+          
+          setPeriodComparisons(periods);
+        }
+      } else if (filterPeriodType === 'monthly') {
+        // Use monthly aggregations (grouped from daily data)
+        const { data: monthlyData, error: monthlyError } = await supabase.rpc('get_monthly_aggregations', {
+          p_start_date: filterStartDate,
+          p_end_date: filterEndDate,
+          p_payment_method_id: filterMethod === 'all' ? null : filterMethod
+        });
+
+        if (monthlyError) {
+          console.error('❌ Monthly aggregations error:', monthlyError);
+          // Fallback to frontend calculation (limited data)
+          calculatePeriodComparisonsWithFilters(invoices || [], credits || [], deposits || [], filterStartDate, filterEndDate, filterPeriodType);
+        } else {
+          console.log('📊 [Database] Monthly periods:', monthlyData?.length || 0);
+          
+          // Convert database results to PeriodComparison format
+          const periods: PeriodComparison[] = (monthlyData || []).map((month: any) => ({
+            period: new Date(month.month_start).toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' }),
+            periodStart: month.month_start,
+            periodEnd: month.month_end,
+            sales: month.total_sales,
+            approvedDeposits: month.approved_deposits,
+            pendingDeposits: month.pending_deposits,
+            gap: month.gap,
+            gapAfterPending: month.total_sales - month.approved_deposits - month.pending_deposits,
+          }));
+          
+          setPeriodComparisons(periods);
+        }
+      } else {
+        // Use monthly aggregations
+        const { data: monthlyData, error: monthlyError } = await supabase.rpc('get_monthly_aggregations', {
+          p_start_date: filterStartDate,
+          p_end_date: filterEndDate,
+          p_payment_method_id: filterMethod === 'all' ? null : filterMethod
+        });
+
+        if (monthlyError) {
+          console.error('❌ Monthly aggregations error:', monthlyError);
+          // Fallback to frontend calculation (limited data)
+          calculatePeriodComparisonsWithFilters(invoices || [], credits || [], deposits || [], filterStartDate, filterEndDate, filterPeriodType);
+        } else {
+          console.log('📊 [Database] Monthly periods:', monthlyData?.length || 0);
+          
+          // Convert database results to PeriodComparison format
+          const periods: PeriodComparison[] = (monthlyData || []).map((month: any) => ({
+            period: month.period_month,
+            periodStart: month.period_start,
+            periodEnd: month.period_end,
+            sales: month.net_sales,
+            approvedDeposits: month.approved_deposits,
+            pendingDeposits: month.pending_deposits,
+            gap: month.net_sales - month.approved_deposits,
+            gapAfterPending: month.net_sales - month.approved_deposits - month.pending_deposits,
+          }));
+          
+          setPeriodComparisons(periods);
+        }
+      }
+    } catch (err) {
+      console.error('❌ Error loading dashboard data:', err);
+    }
+  };
+
   const loadDashboardData = async () => {
+    // ...existing code...
     try {
       console.log('🔍 Loading data with filters:', { appliedStartDate, appliedEndDate, appliedMethod, appliedPeriodType });
+      console.log('🔄 [DASHBOARD] Starting data load for payment method:', appliedMethod);
       
       // ============================================
       // STEP 1: Get accurate totals from database (bypasses 1000 limit)
@@ -283,8 +502,8 @@ export default function DashboardPage() {
         .from('invoices')
         .select('amount_total, sale_order_date, payment_method_id')
         .eq('state', 'posted')
-        .gte('sale_order_date', startDate)
-        .lte('sale_order_date', endDate);
+        .gte('sale_order_date', appliedStartDate)
+        .lte('sale_order_date', appliedEndDate);
 
       // Get credits from credit_notes table
       let creditsQuery = supabase
@@ -292,19 +511,19 @@ export default function DashboardPage() {
         .select('amount_total, sale_order_date, payment_method_id, original_invoice_id')
         .eq('state', 'posted')
         .not('original_invoice_id', 'is', null)
-        .gte('sale_order_date', startDate)
-        .lte('sale_order_date', endDate);
+        .gte('sale_order_date', appliedStartDate)
+        .lte('sale_order_date', appliedEndDate);
 
       let depositsQuery = supabase
         .from('deposits')
         .select('net_amount, status, start_date, end_date, payment_method_id')
-        .or(`and(start_date.lte.${endDate},end_date.gte.${startDate})`);
+        .or(`and(start_date.lte.${appliedEndDate},end_date.gte.${appliedStartDate})`);
 
       // Filter by payment method if selected
-      if (selectedMethod !== 'all') {
-        invoicesQuery = invoicesQuery.eq('payment_method_id', selectedMethod);
-        creditsQuery = creditsQuery.eq('payment_method_id', selectedMethod);
-        depositsQuery = depositsQuery.eq('payment_method_id', selectedMethod);
+      if (appliedMethod !== 'all') {
+        invoicesQuery = invoicesQuery.eq('payment_method_id', appliedMethod);
+        creditsQuery = creditsQuery.eq('payment_method_id', appliedMethod);
+        depositsQuery = depositsQuery.eq('payment_method_id', appliedMethod);
       }
 
       const [{ data: invoices, error: invError }, { data: credits, error: crError }, { data: deposits }] = await Promise.all([
@@ -444,12 +663,19 @@ export default function DashboardPage() {
     }
   };
 
-  const calculatePeriodComparisons = (invoices: any[], credits: any[], deposits: any[]) => {
+  const calculatePeriodComparisonsWithFilters = (
+    invoices: any[],
+    credits: any[],
+    deposits: any[],
+    filterStartDate: string,
+    filterEndDate: string,
+    filterPeriodType: PeriodType
+  ) => {
     const periods: PeriodComparison[] = [];
-    const start = new Date(startDate);
-    const end = new Date(endDate);
+    const start = new Date(filterStartDate);
+    const end = new Date(filterEndDate);
 
-    if (periodType === 'monthly') {
+    if (filterPeriodType === 'monthly') {
       const current = new Date(start.getFullYear(), start.getMonth(), 1);
       const endMonth = new Date(end.getFullYear(), end.getMonth(), 1);
       
@@ -500,7 +726,7 @@ export default function DashboardPage() {
 
         current.setMonth(current.getMonth() + 1);
       }
-    } else if (periodType === 'daily') {
+    } else if (filterPeriodType === 'daily') {
       const current = new Date(start);
       
       while (current <= end) {
@@ -568,8 +794,145 @@ export default function DashboardPage() {
 
       periods.push({
         period: 'Custom Period',
-        periodStart: startDate,
-        periodEnd: endDate,
+        periodStart: filterStartDate,
+        periodEnd: filterEndDate,
+        sales: totalSales,
+        approvedDeposits: approved,
+        pendingDeposits: pending,
+        gap: totalSales - approved,
+        gapAfterPending: totalSales - approved - pending,
+      });
+    }
+
+    setPeriodComparisons(periods);
+  };
+
+  const calculatePeriodComparisons = (invoices: any[], credits: any[], deposits: any[]) => {
+    const periods: PeriodComparison[] = [];
+    const start = new Date(appliedStartDate);
+    const end = new Date(appliedEndDate);
+
+    if (appliedPeriodType === 'monthly') {
+      const current = new Date(start.getFullYear(), start.getMonth(), 1);
+      const endMonth = new Date(end.getFullYear(), end.getMonth(), 1);
+      
+      while (current <= endMonth) {
+        const monthStart = new Date(current.getFullYear(), current.getMonth(), 1);
+        const monthEnd = new Date(current.getFullYear(), current.getMonth() + 1, 0);
+        
+        const monthInvoices = invoices
+          .filter(inv => {
+            const invDate = new Date(inv.sale_order_date);
+            return invDate >= monthStart && invDate <= monthEnd;
+          })
+          .reduce((sum, inv) => sum + inv.amount_total, 0);
+        
+        const monthCredits = credits
+          .filter(cr => {
+            const crDate = new Date(cr.sale_order_date);
+            return crDate >= monthStart && crDate <= monthEnd;
+          })
+          .reduce((sum, cr) => sum + Math.abs(cr.amount_total), 0);
+        
+        const monthSales = monthInvoices - monthCredits;
+
+        const monthDeposits = deposits.filter(d => {
+          const depStart = new Date(d.start_date);
+          const depEnd = new Date(d.end_date);
+          return depStart <= monthEnd && depEnd >= monthStart;
+        });
+
+        const approved = monthDeposits
+          .filter(d => d.status === 'approved')
+          .reduce((sum, d) => sum + d.net_amount, 0);
+        
+        const pending = monthDeposits
+          .filter(d => d.status === 'pending')
+          .reduce((sum, d) => sum + d.net_amount, 0);
+
+        periods.push({
+          period: monthStart.toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' }),
+          periodStart: monthStart.toISOString().split('T')[0],
+          periodEnd: monthEnd.toISOString().split('T')[0],
+          sales: monthSales,
+          approvedDeposits: approved,
+          pendingDeposits: pending,
+          gap: monthSales - approved,
+          gapAfterPending: monthSales - approved - pending,
+        });
+
+        current.setMonth(current.getMonth() + 1);
+      }
+    } else if (appliedPeriodType === 'daily') {
+      const current = new Date(start);
+      
+      while (current <= end) {
+        const dayStart = new Date(current);
+        const dayEnd = new Date(current);
+        dayEnd.setHours(23, 59, 59, 999);
+        
+        const dayInvoices = invoices
+          .filter(inv => {
+            const invDate = new Date(inv.sale_order_date);
+            return invDate.toDateString() === current.toDateString();
+          })
+          .reduce((sum, inv) => sum + inv.amount_total, 0);
+        
+        const dayCredits = credits
+          .filter(cr => {
+            const crDate = new Date(cr.sale_order_date);
+            return crDate.toDateString() === current.toDateString();
+          })
+          .reduce((sum, cr) => sum + Math.abs(cr.amount_total), 0);
+        
+        const daySales = dayInvoices - dayCredits;
+
+        const dayDeposits = deposits.filter(d => {
+          const depStart = new Date(d.start_date);
+          const depEnd = new Date(d.end_date);
+          return depStart <= dayEnd && depEnd >= dayStart;
+        });
+
+        const approved = dayDeposits
+          .filter(d => d.status === 'approved')
+          .reduce((sum, d) => sum + d.net_amount, 0);
+        
+        const pending = dayDeposits
+          .filter(d => d.status === 'pending')
+          .reduce((sum, d) => sum + d.net_amount, 0);
+
+        if (daySales > 0 || approved > 0 || pending > 0) {
+          periods.push({
+            period: current.toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' }),
+            periodStart: current.toISOString().split('T')[0],
+            periodEnd: current.toISOString().split('T')[0],
+            sales: daySales,
+            approvedDeposits: approved,
+            pendingDeposits: pending,
+            gap: daySales - approved,
+            gapAfterPending: daySales - approved - pending,
+          });
+        }
+
+        current.setDate(current.getDate() + 1);
+      }
+    } else {
+      const totalInvoices = invoices.reduce((sum, inv) => sum + inv.amount_total, 0);
+      const totalCredits = credits.reduce((sum, cr) => sum + Math.abs(cr.amount_total), 0);
+      const totalSales = totalInvoices - totalCredits;
+      
+      const approved = deposits
+        .filter(d => d.status === 'approved')
+        .reduce((sum, d) => sum + d.net_amount, 0);
+      
+      const pending = deposits
+        .filter(d => d.status === 'pending')
+        .reduce((sum, d) => sum + d.net_amount, 0);
+
+      periods.push({
+        period: 'Custom Period',
+        periodStart: appliedStartDate,
+        periodEnd: appliedEndDate,
         sales: totalSales,
         approvedDeposits: approved,
         pendingDeposits: pending,

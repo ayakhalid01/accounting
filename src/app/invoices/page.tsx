@@ -41,6 +41,10 @@ export default function InvoicesPage() {
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [credits, setCredits] = useState<CreditNote[]>([]);
   
+  // Batch loading state
+  const [isBatchLoading, setIsBatchLoading] = useState(false);
+  const [batchProgress, setBatchProgress] = useState({ loaded: 0, total: 0, currentBatch: 0 });
+  
   // Statistics from database view (ALL data, instant)
   const [statistics, setStatistics] = useState<DashboardStatistics | null>(null);
   
@@ -88,9 +92,10 @@ export default function InvoicesPage() {
   }, [documentType, searchTerm, startDate, endDate, selectedPaymentMethod, hasCreditsFilter, sortField, sortOrder, itemsPerPage]);
 
   // ============================================
-  // Apply Filters Button Handler
+  // Apply Filters Button Handler - Uses Batch Loading
   // ============================================
   const handleApplyFilters = async () => {
+    // Update applied filters immediately
     setAppliedDocumentType(documentType);
     setAppliedSearchTerm(searchTerm);
     setAppliedStartDate(startDate);
@@ -108,15 +113,36 @@ export default function InvoicesPage() {
       hasCreditsFilter
     });
     
-    // Directly load data with new applied filters
-    setLoading(true);
+    // Start batch loading with progress dialog
+    setIsBatchLoading(true);
+    setBatchProgress({ loaded: 0, total: 0, currentBatch: 0 });
+    
+    // IMPORTANT: Clear old data before loading new data
+    setInvoices([]);
+    setCredits([]);
+    
+    // Use the NEW filter values (not the state which updates asynchronously)
+    const newFilters = {
+      appliedStartDate: startDate,
+      appliedEndDate: endDate,
+      appliedPaymentMethod: selectedPaymentMethod,
+      appliedDocumentType: documentType,
+      appliedSearchTerm: searchTerm,
+      appliedHasCreditsFilter: hasCreditsFilter
+    };
+    
     try {
       await Promise.all([
-        loadInvoices(1),
-        loadCredits(1),
-        loadStatistics()
+        loadAllInvoicesInBatchesWithFilters(newFilters),
+        loadAllCreditsInBatchesWithFilters(newFilters),
+        loadStatisticsWithFilters(newFilters)
       ]);
+      
+      console.log('✅ [FILTERS] All data loaded successfully');
+    } catch (error) {
+      console.error('❌ [FILTERS] Error loading batches:', error);
     } finally {
+      setIsBatchLoading(false);
       setLoading(false);
     }
   };
@@ -127,14 +153,12 @@ export default function InvoicesPage() {
   const loadStatistics = async () => {
     try {
       console.log('📊 [STATS] Loading aggregations with filters...');
-      console.log('📊 [STATS] Filters:', { startDate, endDate, selectedPaymentMethod });
+      console.log('📊 [STATS] Filters:', { appliedStartDate, appliedEndDate, appliedPaymentMethod });
       
-      // Calculate next day for inclusive range (gte start, lt next_day)
-      const nextDay = new Date(endDate);
+      const nextDay = new Date(appliedEndDate);
       nextDay.setDate(nextDay.getDate() + 1);
       const nextDayStr = nextDay.toISOString().split('T')[0];
       
-      // Use RPC function to get accurate aggregations (use APPLIED filters)
       const { data: aggData, error: aggError } = await supabase.rpc('get_dashboard_aggregations', {
         p_start_date: appliedStartDate,
         p_end_date: appliedEndDate,
@@ -146,7 +170,6 @@ export default function InvoicesPage() {
         return;
       }
 
-      // Get counts separately (RPC returns wrong counts due to deposits join)
       let invoicesCountQuery = supabase
         .from('invoices')
         .select('id', { count: 'exact', head: true })
@@ -208,111 +231,434 @@ export default function InvoicesPage() {
   };
 
   // ============================================
-  // Load One Page of Invoices (Lazy Loading)
+  // Load Statistics with Custom Filters (for Apply Filters)
   // ============================================
-  const loadInvoices = async (page: number = currentPage) => {
+  const loadStatisticsWithFilters = async (filters: any) => {
     try {
-      console.log(`📥 [INVOICES] Loading page ${page} with date filter: ${appliedStartDate} to ${appliedEndDate}...`);
-      console.log(`📥 [INVOICES] Payment method: ${appliedPaymentMethod}`);
+      console.log('📊 [STATS] Loading aggregations with filters...');
+      console.log('📊 [STATS] Filters:', { 
+        startDate: filters.appliedStartDate, 
+        endDate: filters.appliedEndDate, 
+        paymentMethod: filters.appliedPaymentMethod 
+      });
       
-      const offset = (page - 1) * itemsPerPage;
+      const nextDay = new Date(filters.appliedEndDate);
+      nextDay.setDate(nextDay.getDate() + 1);
+      const nextDayStr = nextDay.toISOString().split('T')[0];
       
-      let query = supabase
-        .from('invoices')
-        .select(`
-          *,
-          payment_method:payment_methods(id, name_en)
-        `)
-        .eq('state', 'posted');
-      
-      // Apply date range filter (use APPLIED filters)
-      // For TIMESTAMPTZ: gte uses start of day, lt uses start of next day (inclusive range)
-      if (appliedStartDate) {
-        console.log(`📥 [INVOICES] Filtering: sale_order_date >= ${appliedStartDate}`);
-        query = query.gte('sale_order_date', appliedStartDate);
-      }
-      if (appliedEndDate) {
-        // Add 1 day and use lt (less than) to include all of end_date
-        const nextDay = new Date(appliedEndDate);
-        nextDay.setDate(nextDay.getDate() + 1);
-        const nextDayStr = nextDay.toISOString().split('T')[0];
-        console.log(`📥 [INVOICES] Filtering: sale_order_date < ${nextDayStr}`);
-        query = query.lt('sale_order_date', nextDayStr);
-      }
-      
-      // Apply payment method filter
-      if (appliedPaymentMethod !== 'all') {
-        query = query.eq('payment_method_id', appliedPaymentMethod);
-      }
-      
-      console.log(`📥 [INVOICES] Executing query with offset ${offset}, limit ${itemsPerPage}...`);
-      const { data, error } = await query
-        .order('sale_order_date', { ascending: sortOrder === 'asc' })
-        .range(offset, offset + itemsPerPage - 1);
+      const { data: aggData, error: aggError } = await supabase.rpc('get_dashboard_aggregations', {
+        p_start_date: filters.appliedStartDate,
+        p_end_date: filters.appliedEndDate,
+        p_payment_method_id: filters.appliedPaymentMethod === 'all' ? null : filters.appliedPaymentMethod
+      });
 
-      if (error) {
-        console.error('❌ [INVOICES] Query error:', error);
-        throw error;
+      if (aggError) {
+        console.error('❌ [STATS] Aggregation error:', aggError);
+        return;
+      }
+
+      let invoicesCountQuery = supabase
+        .from('invoices')
+        .select('id', { count: 'exact', head: true })
+        .eq('state', 'posted')
+        .gte('sale_order_date', filters.appliedStartDate)
+        .lt('sale_order_date', nextDayStr);
+      
+      if (filters.appliedPaymentMethod !== 'all') {
+        invoicesCountQuery = invoicesCountQuery.eq('payment_method_id', filters.appliedPaymentMethod);
       }
       
-      console.log(`✅ [INVOICES] Loaded ${data?.length || 0} invoices for page ${page}`);
-      console.log(`✅ [INVOICES] First invoice:`, data?.[0]);
-      setInvoices(data || []);
+      let creditsCountQuery = supabase
+        .from('credit_notes')
+        .select('id', { count: 'exact', head: true })
+        .eq('state', 'posted')
+        .not('original_invoice_id', 'is', null)
+        .gte('sale_order_date', filters.appliedStartDate)
+        .lt('sale_order_date', nextDayStr);
+      
+      if (filters.appliedPaymentMethod !== 'all') {
+        creditsCountQuery = creditsCountQuery.eq('payment_method_id', filters.appliedPaymentMethod);
+      }
+      
+      const [
+        { count: invoicesCount },
+        { count: creditsCount }
+      ] = await Promise.all([
+        invoicesCountQuery,
+        creditsCountQuery
+      ]);
+
+      const invoicesTotal = aggData?.[0]?.total_invoices_amount || 0;
+      const creditsTotal = aggData?.[0]?.total_credits_amount || 0;
+      const netAmount = aggData?.[0]?.net_sales || 0;
+      
+      console.log('📊 [STATS] From RPC - Invoices total:', invoicesTotal);
+      console.log('📊 [STATS] From count - Invoices count:', invoicesCount);
+      
+      setStatistics({
+        total_invoices_amount: invoicesTotal,
+        total_credits_amount: creditsTotal,
+        net_amount: netAmount,
+        total_invoices_count: invoicesCount || 0,
+        total_credits_count: creditsCount || 0,
+        last_updated: new Date().toISOString()
+      });
+      
+      console.log('✅ [STATS] Loaded:', {
+        invoices_amount: invoicesTotal,
+        invoices_count: invoicesCount,
+        credits_amount: creditsTotal,
+        credits_count: creditsCount,
+        net: netAmount
+      });
       
     } catch (error) {
-      console.error('❌ [INVOICES] Error:', error);
-      setInvoices([]);
+      console.error('❌ [STATS] Exception:', error);
     }
   };
 
   // ============================================
-  // Load One Page of Credits (Lazy Loading)
+  // Load All Invoices in Batches (1000 rows at a time)
   // ============================================
-  const loadCredits = async (page: number = currentPage) => {
+  const loadAllInvoicesInBatches = async () => {
     try {
-      console.log(`📥 [CREDITS] Loading page ${page} with date filter: ${appliedStartDate} to ${appliedEndDate}...`);
-      
-      const offset = (page - 1) * itemsPerPage;
-      
-      let query = supabase
-        .from('credit_notes')
-        .select(`
-          *,
-          payment_method:payment_methods(id, name_en)
-        `)
-        .eq('state', 'posted')
-        .not('original_invoice_id', 'is', null);
-      
-      // Apply date range filter (use APPLIED filters)
-      // For TIMESTAMPTZ: gte uses start of day, lt uses start of next day (inclusive range)
-      if (appliedStartDate) {
-        query = query.gte('sale_order_date', appliedStartDate);
-      }
-      if (appliedEndDate) {
-        // Add 1 day and use lt (less than) to include all of end_date
-        const nextDay = new Date(appliedEndDate);
-        nextDay.setDate(nextDay.getDate() + 1);
-        const nextDayStr = nextDay.toISOString().split('T')[0];
-        query = query.lt('sale_order_date', nextDayStr);
-      }
-      
-      // Apply payment method filter
-      if (appliedPaymentMethod !== 'all') {
-        query = query.eq('payment_method_id', appliedPaymentMethod);
-      }
-      
-      const { data, error } = await query
-        .order('credit_date', { ascending: sortOrder === 'asc' })
-        .range(offset, offset + itemsPerPage - 1);
+      console.log('📥 [BATCH] Starting batch load of invoices...');
+      const BATCH_SIZE = 1000;
+      let allInvoices: Invoice[] = [];
+      let batchNumber = 0;
+      let hasMore = true;
 
-      if (error) throw error;
-      
-      console.log(`✅ [CREDITS] Loaded ${data?.length || 0} for page ${page}`);
-      setCredits(data || []);
+      while (hasMore) {
+        const offset = batchNumber * BATCH_SIZE;
+        console.log(`📥 [BATCH] Loading batch ${batchNumber + 1} (offset: ${offset}, limit: ${BATCH_SIZE})...`);
+        
+        let query = supabase
+          .from('invoices')
+          .select(`
+            *,
+            payment_method:payment_methods(id, name_en)
+          `)
+          .eq('state', 'posted');
+        
+        // Apply filters
+        if (appliedStartDate) {
+          query = query.gte('sale_order_date', appliedStartDate);
+        }
+        if (appliedEndDate) {
+          const nextDay = new Date(appliedEndDate);
+          nextDay.setDate(nextDay.getDate() + 1);
+          const nextDayStr = nextDay.toISOString().split('T')[0];
+          query = query.lt('sale_order_date', nextDayStr);
+        }
+        
+        if (appliedPaymentMethod !== 'all') {
+          query = query.eq('payment_method_id', appliedPaymentMethod);
+        }
+        
+        const { data, error } = await query
+          .order('sale_order_date', { ascending: sortOrder === 'asc' })
+          .range(offset, offset + BATCH_SIZE - 1);
+
+        if (error) {
+          console.error('❌ [BATCH] Query error:', error);
+          throw error;
+        }
+
+        if (!data || data.length === 0) {
+          hasMore = false;
+          console.log('📥 [BATCH] No more invoices to load');
+        } else {
+          allInvoices.push(...data);
+          console.log(`✅ [BATCH] Loaded batch ${batchNumber + 1}: ${data.length} invoices (total: ${allInvoices.length})`);
+          
+          // Update progress - add loaded amount to total
+          setBatchProgress(prev => ({
+            loaded: allInvoices.length,
+            total: prev.total + data.length,
+            currentBatch: batchNumber + 1
+          }));
+          
+          // Stop if we got fewer items than batch size (means we reached the end)
+          if (data.length < BATCH_SIZE) {
+            hasMore = false;
+          }
+        }
+
+        batchNumber++;
+        
+        // Small delay to allow UI to update
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+
+      console.log(`✅ [BATCH] Finished loading ${allInvoices.length} invoices total`);
+      setInvoices(allInvoices);
+      return allInvoices;
       
     } catch (error) {
-      console.error('❌ [CREDITS] Error:', error);
+      console.error('❌ [BATCH] Error loading invoices:', error);
+      setInvoices([]);
+      return [];
+    }
+  };
+
+  // ============================================
+  // Load All Invoices in Batches WITH Custom Filters (for Apply Filters)
+  // ============================================
+  const loadAllInvoicesInBatchesWithFilters = async (filters: any) => {
+    try {
+      console.log('📥 [BATCH] Starting batch load of invoices with custom filters...');
+      console.log('📥 [BATCH] Using filters:', filters);
+      const BATCH_SIZE = 1000;
+      let allInvoices: Invoice[] = []; // Fresh array, not appending to state
+      let batchNumber = 0;
+      let hasMore = true;
+
+      while (hasMore) {
+        const offset = batchNumber * BATCH_SIZE;
+        console.log(`📥 [BATCH] Loading batch ${batchNumber + 1} (offset: ${offset}, limit: ${BATCH_SIZE})...`);
+        
+        let query = supabase
+          .from('invoices')
+          .select(`
+            *,
+            payment_method:payment_methods(id, name_en)
+          `)
+          .eq('state', 'posted');
+        
+        // Apply filters from parameters (NOT from state)
+        if (filters.appliedStartDate) {
+          console.log('📥 [BATCH] Applying start date:', filters.appliedStartDate);
+          query = query.gte('sale_order_date', filters.appliedStartDate);
+        }
+        if (filters.appliedEndDate) {
+          const nextDay = new Date(filters.appliedEndDate);
+          nextDay.setDate(nextDay.getDate() + 1);
+          const nextDayStr = nextDay.toISOString().split('T')[0];
+          console.log('📥 [BATCH] Applying end date:', nextDayStr);
+          query = query.lt('sale_order_date', nextDayStr);
+        }
+        
+        if (filters.appliedPaymentMethod !== 'all') {
+          console.log('📥 [BATCH] Applying payment method:', filters.appliedPaymentMethod);
+          query = query.eq('payment_method_id', filters.appliedPaymentMethod);
+        }
+        
+        const { data, error } = await query
+          .order('sale_order_date', { ascending: sortOrder === 'asc' })
+          .range(offset, offset + BATCH_SIZE - 1);
+
+        if (error) {
+          console.error('❌ [BATCH] Query error:', error);
+          throw error;
+        }
+
+        if (!data || data.length === 0) {
+          hasMore = false;
+          console.log('📥 [BATCH] No more invoices to load');
+        } else {
+          allInvoices.push(...data);
+          console.log(`✅ [BATCH] Loaded batch ${batchNumber + 1}: ${data.length} invoices (total: ${allInvoices.length})`);
+          
+          // Update progress
+          setBatchProgress(prev => ({
+            loaded: allInvoices.length,
+            total: prev.total + data.length,
+            currentBatch: batchNumber + 1
+          }));
+          
+          if (data.length < BATCH_SIZE) {
+            hasMore = false;
+          }
+        }
+
+        batchNumber++;
+        
+        // Small delay to allow UI to update
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+
+      console.log(`✅ [BATCH] Finished loading ${allInvoices.length} invoices total`);
+      console.log(`📥 [BATCH] Setting invoices state to ${allInvoices.length} items`);
+      setInvoices(allInvoices);
+      return allInvoices;
+      
+    } catch (error) {
+      console.error('❌ [BATCH] Error loading invoices:', error);
+      setInvoices([]);
+      return [];
+    }
+  };
+
+  // ============================================
+  // Load All Credits in Batches (1000 rows at a time)
+  // ============================================
+  const loadAllCreditsInBatches = async () => {
+    try {
+      console.log('📥 [BATCH] Starting batch load of credits...');
+      const BATCH_SIZE = 1000;
+      let allCredits: CreditNote[] = [];
+      let batchNumber = 0;
+      let hasMore = true;
+
+      while (hasMore) {
+        const offset = batchNumber * BATCH_SIZE;
+        console.log(`📥 [BATCH] Loading credit batch ${batchNumber + 1} (offset: ${offset}, limit: ${BATCH_SIZE})...`);
+        
+        let query = supabase
+          .from('credit_notes')
+          .select(`
+            *,
+            payment_method:payment_methods(id, name_en)
+          `)
+          .eq('state', 'posted')
+          .not('original_invoice_id', 'is', null);
+        
+        // Apply filters
+        if (appliedStartDate) {
+          query = query.gte('sale_order_date', appliedStartDate);
+        }
+        if (appliedEndDate) {
+          const nextDay = new Date(appliedEndDate);
+          nextDay.setDate(nextDay.getDate() + 1);
+          const nextDayStr = nextDay.toISOString().split('T')[0];
+          query = query.lt('sale_order_date', nextDayStr);
+        }
+        
+        if (appliedPaymentMethod !== 'all') {
+          query = query.eq('payment_method_id', appliedPaymentMethod);
+        }
+        
+        const { data, error } = await query
+          .order('credit_date', { ascending: sortOrder === 'asc' })
+          .range(offset, offset + BATCH_SIZE - 1);
+
+        if (error) {
+          console.error('❌ [BATCH] Query error:', error);
+          throw error;
+        }
+
+        if (!data || data.length === 0) {
+          hasMore = false;
+          console.log('📥 [BATCH] No more credits to load');
+        } else {
+          allCredits.push(...data);
+          console.log(`✅ [BATCH] Loaded credit batch ${batchNumber + 1}: ${data.length} credits (total: ${allCredits.length})`);
+          
+          // Update progress - add loaded amount to total
+          setBatchProgress(prev => ({
+            loaded: prev.loaded + data.length,
+            total: prev.total + data.length,
+            currentBatch: batchNumber + 1
+          }));
+          
+          if (data.length < BATCH_SIZE) {
+            hasMore = false;
+          }
+        }
+
+        batchNumber++;
+        
+        // Small delay to allow UI to update
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+
+      console.log(`✅ [BATCH] Finished loading ${allCredits.length} credits total`);
+      setCredits(allCredits);
+      return allCredits;
+      
+    } catch (error) {
+      console.error('❌ [BATCH] Error loading credits:', error);
       setCredits([]);
+      return [];
+    }
+  };
+
+  // ============================================
+  // Load All Credits in Batches WITH Custom Filters (for Apply Filters)
+  // ============================================
+  const loadAllCreditsInBatchesWithFilters = async (filters: any) => {
+    try {
+      console.log('📥 [BATCH] Starting batch load of credits with custom filters...');
+      console.log('📥 [BATCH] Using filters:', filters);
+      const BATCH_SIZE = 1000;
+      let allCredits: CreditNote[] = []; // Fresh array, not appending to state
+      let batchNumber = 0;
+      let hasMore = true;
+
+      while (hasMore) {
+        const offset = batchNumber * BATCH_SIZE;
+        console.log(`📥 [BATCH] Loading credit batch ${batchNumber + 1} (offset: ${offset}, limit: ${BATCH_SIZE})...`);
+        
+        let query = supabase
+          .from('credit_notes')
+          .select(`
+            *,
+            payment_method:payment_methods(id, name_en)
+          `)
+          .eq('state', 'posted')
+          .not('original_invoice_id', 'is', null);
+        
+        // Apply filters from parameters (NOT from state)
+        if (filters.appliedStartDate) {
+          console.log('📥 [BATCH] Applying start date:', filters.appliedStartDate);
+          query = query.gte('sale_order_date', filters.appliedStartDate);
+        }
+        if (filters.appliedEndDate) {
+          const nextDay = new Date(filters.appliedEndDate);
+          nextDay.setDate(nextDay.getDate() + 1);
+          const nextDayStr = nextDay.toISOString().split('T')[0];
+          console.log('📥 [BATCH] Applying end date:', nextDayStr);
+          query = query.lt('sale_order_date', nextDayStr);
+        }
+        
+        if (filters.appliedPaymentMethod !== 'all') {
+          console.log('📥 [BATCH] Applying payment method:', filters.appliedPaymentMethod);
+          query = query.eq('payment_method_id', filters.appliedPaymentMethod);
+        }
+        
+        const { data, error } = await query
+          .order('credit_date', { ascending: sortOrder === 'asc' })
+          .range(offset, offset + BATCH_SIZE - 1);
+
+        if (error) {
+          console.error('❌ [BATCH] Query error:', error);
+          throw error;
+        }
+
+        if (!data || data.length === 0) {
+          hasMore = false;
+          console.log('📥 [BATCH] No more credits to load');
+        } else {
+          allCredits.push(...data);
+          console.log(`✅ [BATCH] Loaded credit batch ${batchNumber + 1}: ${data.length} credits (total: ${allCredits.length})`);
+          
+          // Update progress
+          setBatchProgress(prev => ({
+            loaded: prev.loaded + data.length,
+            total: prev.total + data.length,
+            currentBatch: batchNumber + 1
+          }));
+          
+          if (data.length < BATCH_SIZE) {
+            hasMore = false;
+          }
+        }
+
+        batchNumber++;
+        
+        // Small delay to allow UI to update
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+
+      console.log(`✅ [BATCH] Finished loading ${allCredits.length} credits total`);
+      console.log(`📥 [BATCH] Setting credits state to ${allCredits.length} items`);
+      setCredits(allCredits);
+      return allCredits;
+      
+    } catch (error) {
+      console.error('❌ [BATCH] Error loading credits:', error);
+      setCredits([]);
+      return [];
     }
   };
 
@@ -352,8 +698,8 @@ export default function InvoicesPage() {
       // Load statistics and first page in parallel
       await Promise.all([
         loadStatistics(),
-        loadInvoices(1),
-        loadCredits(1),
+        loadAllInvoicesInBatches(),
+        loadAllCreditsInBatches(),
         loadPaymentMethods()
       ]);
       
@@ -365,39 +711,15 @@ export default function InvoicesPage() {
   }, []);
 
   // ============================================
-  // Load New Page When Page Changes
-  // ============================================
-  useEffect(() => {
-    if (currentPage > 1 && !loading) {
-      setLoading(true);
-      Promise.all([
-        loadInvoices(currentPage),
-        loadCredits(currentPage)
-      ]).then(() => {
-        setLoading(false);
-        console.log(`✅ [PAGE] Loaded page ${currentPage}`);
-      });
-    }
-  }, [currentPage]);
-
-  // ============================================
   // Reload When APPLIED Filters Change (including itemsPerPage)
   // ============================================
   useEffect(() => {
     if (!loading && invoices.length > 0) {
-      // Reset to page 1 and reload
+      // Reset to page 1 when filters change
       if (currentPage !== 1) {
         setCurrentPage(1);
       }
-      setLoading(true);
-      Promise.all([
-        loadInvoices(1),
-        loadCredits(1),
-        loadStatistics()
-      ]).then(() => {
-        setLoading(false);
-        console.log('✅ [FILTERS] Reloaded with new applied filters');
-      });
+      console.log('✅ [FILTERS] Filters changed, showing page 1');
     }
   }, [sortField, sortOrder, appliedStartDate, appliedEndDate, appliedPaymentMethod, appliedSearchTerm, appliedDocumentType, appliedHasCreditsFilter, itemsPerPage]);
 
@@ -613,6 +935,41 @@ export default function InvoicesPage() {
   return (
     <div className="min-h-screen bg-gray-50">
       <Navigation />
+      
+      {/* Batch Loading Progress Dialog */}
+      {isBatchLoading && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-8 max-w-md w-full mx-4 shadow-2xl">
+            <h2 className="text-xl font-bold mb-4 text-center">Loading Data...</h2>
+            
+            <div className="mb-4">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-sm font-medium text-gray-700">Progress</span>
+                <span className="text-sm font-medium text-gray-700">{batchProgress.loaded.toLocaleString()} rows</span>
+              </div>
+              <div className="w-full h-3 bg-gray-200 rounded-full overflow-hidden">
+                <div 
+                  className="h-full bg-blue-500 transition-all duration-300"
+                  style={{ width: `${Math.min((batchProgress.loaded / Math.max(1, batchProgress.loaded + 500)) * 100, 95)}%` }}
+                ></div>
+              </div>
+            </div>
+
+            <div className="space-y-2 text-center">
+              <p className="text-sm text-gray-600">
+                <span className="font-semibold">Batch {batchProgress.currentBatch}:</span> Loading 1000 rows at a time
+              </p>
+              <p className="text-xs text-gray-500">
+                This may take a few moments depending on data volume...
+              </p>
+            </div>
+
+            <div className="mt-6 flex justify-center">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+            </div>
+          </div>
+        </div>
+      )}
       
       <div className="container mx-auto px-4 py-8">
         {/* Header */}
