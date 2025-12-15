@@ -280,3 +280,49 @@ export interface StatCard {
   icon?: any;
   color?: string;
 }
+// Deposits Feature Types
+export type TaxCalculationMethod = 'fixed_percent' | 'fixed_amount' | 'column_based' | 'none';
+
+export interface DepositSettings {
+  id: string;
+  payment_method_id: string;
+  filter_column_name?: string;
+  filter_include_values?: string[];
+  amount_column_name: string;
+  refund_column_name?: string;
+  tax_enabled: boolean;
+  tax_method: TaxCalculationMethod;
+  tax_value?: number; // for fixed_percent or fixed_amount
+  tax_column_name?: string; // for column_based
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DepositFileData {
+  columns: string[];
+  rows: Record<string, any>[];
+  rowCount: number;
+}
+
+export interface DepositCalculation {
+  totalAmount: number;
+  totalRefunds: number;
+  netAmount: number;
+  taxAmount: number;
+  finalAmount: number;
+  rowsAfterFilter: number;
+}
+
+export interface DepositConfig {
+  paymentMethodId: string;
+  startDate: string;
+  endDate: string;
+  filterColumn?: string;
+  filterValues?: string[];
+  amountColumn: string;
+  refundColumn?: string;
+  taxEnabled: boolean;
+  taxMethod: TaxCalculationMethod;
+  taxValue?: number;
+  taxColumn?: string;
+}
