@@ -1,0 +1,21 @@
+[build]
+  command = "npm run build"
+  publish = ".next"
+
+[build.environment]
+  # Disable secrets scanning for NEXT_PUBLIC_ environment variables
+  # These are intentionally public and exposed in client-side code
+  SECRETS_SCAN_OMIT_KEYS = "NEXT_PUBLIC_SUPABASE_URL,NEXT_PUBLIC_SUPABASE_ANON_KEY"
+
+# Function configuration
+[functions]
+  node_bundler = "esbuild"
+  directory = ".netlify/functions"
+
+# Next.js plugin
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
+
+[dev]
+  # Increase dev timeout
+  targetPort = 3000

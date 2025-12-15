@@ -1,0 +1,1098 @@
+'use client';
+
+import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import Navigation from '@/components/Navigation';
+import { auth } from '@/lib/supabase/auth';
+import { supabase } from '@/lib/supabase/client';
+import { formatCurrency } from '@/lib/utils';
+import { 
+  DollarSign, 
+  CheckCircle,
+  Clock,
+  AlertTriangle
+} from 'lucide-react';
+
+interface DashboardStats {
+  totalSales: number;
+  approvedDepositsAmount: number;
+  pendingDepositsAmount: number;
+  approvedDepositsCount: number;
+  pendingDepositsCount: number;
+  gapAmount: number;
+  gapAfterPending: number;
+}
+
+interface PeriodComparison {
+  period: string;
+  periodStart: string;
+  periodEnd: string;
+  sales: number;
+  approvedDeposits: number;
+  pendingDeposits: number;
+  gap: number;
+  gapAfterPending: number;
+}
+
+type PeriodType = 'daily' | 'monthly' | 'custom';
+
+export default function DashboardPage() {
+  const router = useRouter();
+  const [loading, setLoading] = useState(true);
+  
+  // ============================================
+  // Load Saved Filters from localStorage
+  // ============================================
+  const getSavedFilters = () => {
+    if (typeof window === 'undefined') return null;
+    const saved = localStorage.getItem('dashboard_filters');
+    return saved ? JSON.parse(saved) : null;
+  };
+  
+  const savedFilters = getSavedFilters();
+  
+  const [stats, setStats] = useState<DashboardStats>({
+    totalSales: 0,
+    approvedDepositsAmount: 0,
+    pendingDepositsAmount: 0,
+    approvedDepositsCount: 0,
+    pendingDepositsCount: 0,
+    gapAmount: 0,
+    gapAfterPending: 0,
+  });
+  
+  const [periodComparisons, setPeriodComparisons] = useState<PeriodComparison[]>([]);
+  const [paymentMethods, setPaymentMethods] = useState<any[]>([]);
+  
+  // Filters - Restored from localStorage
+  const [periodType, setPeriodType] = useState<PeriodType>(savedFilters?.periodType || 'monthly');
+  const [startDate, setStartDate] = useState<string>(savedFilters?.startDate || '');
+  const [endDate, setEndDate] = useState<string>(savedFilters?.endDate || '');
+  const [selectedMethod, setSelectedMethod] = useState<string>(savedFilters?.selectedMethod || 'all');
+  
+  // Applied filters (only update on "Apply" button click)
+  const [appliedStartDate, setAppliedStartDate] = useState<string>(savedFilters?.startDate || '');
+  const [appliedEndDate, setAppliedEndDate] = useState<string>(savedFilters?.endDate || '');
+  const [appliedMethod, setAppliedMethod] = useState<string>(savedFilters?.selectedMethod || 'all');
+  const [appliedPeriodType, setAppliedPeriodType] = useState<PeriodType>(savedFilters?.periodType || 'monthly');
+  
+  // Refresh allocations state
+  const [refreshingAllocations, setRefreshingAllocations] = useState(false);
+  const [allocationStats, setAllocationStats] = useState<any>(null);
+
+  // ============================================
+  // Refresh Deposit Allocations
+  // ============================================
+  const handleRefreshAllocations = async () => {
+    setRefreshingAllocations(true);
+    try {
+      console.log('🔄 Refreshing deposit allocations...');
+      
+      const { data, error } = await supabase
+        .rpc('refresh_all_deposit_allocations');
+      
+      if (error) {
+        console.error('❌ Error refreshing allocations:', error);
+        alert('Error refreshing allocations: ' + error.message);
+        return;
+      }
+      
+      console.log('✅ Allocations refreshed:', data);
+      setAllocationStats(data[0]);
+      
+      // Show success message
+      if (data && data[0]) {
+        const stats = data[0];
+        alert(`✅ Allocations Refreshed!\n\nDeposits: ${stats.total_deposits_processed}\nDays: ${stats.total_days_allocated}\nGap Covered: ${stats.total_gap_covered}\nGap Uncovered: ${stats.total_gap_uncovered}\nTime: ${stats.processing_time_seconds?.toFixed(2)}s`);
+      }
+      
+      // Reload dashboard data after refresh
+      await loadDashboardData();
+    } catch (err: any) {
+      console.error('❌ Error during refresh:', err);
+      alert('Error: ' + err.message);
+    } finally {
+      setRefreshingAllocations(false);
+    }
+  };
+
+  // Pagination for comparison table
+  const [currentPage, setCurrentPage] = useState(1);
+  const itemsPerPage = 10;
+
+  // ============================================
+  // Apply Filters (only when user clicks Apply button)
+  // ============================================
+  const handleApplyFilters = async () => {
+    setAppliedStartDate(startDate);
+    setAppliedEndDate(endDate);
+    setAppliedMethod(selectedMethod);
+    setAppliedPeriodType(periodType);
+    setCurrentPage(1); // Reset pagination when filters change
+    
+    // Save to localStorage
+    const filtersToSave = {
+      periodType,
+      startDate,
+      endDate,
+      selectedMethod
+    };
+    localStorage.setItem('dashboard_filters', JSON.stringify(filtersToSave));
+    
+    // Directly load data with new applied filters
+    setLoading(true);
+    try {
+      await loadDashboardData();
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // ============================================
+  // Download Comparison Table as CSV
+  // ============================================
+  const downloadComparisonCSV = () => {
+    if (periodComparisons.length === 0) {
+      alert('No data to download');
+      return;
+    }
+
+    // Prepare CSV headers
+    const headers = ['Period', 'Sales (EGP)', 'Approved Deposits (EGP)', 'Pending Deposits (EGP)', 'Gap (EGP)', 'Status'];
+
+    // Prepare CSV rows
+    const rows = periodComparisons.map(period => [
+      period.period,
+      period.sales,
+      period.approvedDeposits,
+      period.pendingDeposits,
+      Math.abs(period.gap),
+      period.gap === 0 ? 'Complete' : period.gapAfterPending <= 0 ? 'Pending' : 'Missing'
+    ]);
+
+    // Create CSV content
+    const csvContent = [
+      headers.map(h => `"${h}"`).join(','),
+      ...rows.map(row => row.map(cell => `"${cell}"`).join(','))
+    ].join('\n');
+
+    // Download file
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `dashboard_comparison_${new Date().toISOString().split('T')[0]}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(url);
+    
+    console.log('✅ Downloaded', periodComparisons.length, 'periods as CSV');
+  };
+
+  // ============================================
+  // Save Filters to localStorage (when filters change)
+  // ============================================
+  useEffect(() => {
+    if (startDate && endDate) { // Only save if dates are set
+      const filtersToSave = {
+        periodType,
+        startDate,
+        endDate,
+        selectedMethod
+      };
+      localStorage.setItem('dashboard_filters', JSON.stringify(filtersToSave));
+    }
+  }, [periodType, startDate, endDate, selectedMethod]);
+
+  useEffect(() => {
+    const checkAuthAndLoadData = async () => {
+      const { session } = await auth.getSession();
+      
+      if (!session) {
+        router.push('/login');
+        return;
+      }
+      
+      // Set default dates ONLY if not already set from localStorage
+      if (!startDate || !endDate) {
+        const now = new Date();
+        const firstDay = new Date(now.getFullYear(), now.getMonth(), 1); // First day of current month
+        const today = new Date(); // Today (current day)
+        setStartDate(firstDay.toISOString().split('T')[0]);
+        setEndDate(today.toISOString().split('T')[0]);
+        console.log('📅 Default date range (current month to today):', firstDay.toISOString().split('T')[0], 'to', today.toISOString().split('T')[0]);
+      } else {
+        console.log('📅 Loaded saved filters:', startDate, 'to', endDate);
+      }
+      
+      await loadPaymentMethods();
+      setLoading(false);
+    };
+
+    checkAuthAndLoadData();
+  }, [router]);
+
+  useEffect(() => {
+    if (appliedStartDate && appliedEndDate) {
+      loadDashboardData();
+    }
+  }, [appliedStartDate, appliedEndDate, appliedMethod, appliedPeriodType]);
+
+  const loadPaymentMethods = async () => {
+    try {
+      const { data } = await supabase
+        .from('payment_methods')
+        .select('*')
+        .eq('is_active', true)
+        .order('name_en');
+      
+      setPaymentMethods(data || []);
+    } catch (err) {
+      console.error('❌ Error loading payment methods:', err);
+    }
+  };
+
+  const loadDashboardData = async () => {
+    try {
+      console.log('🔍 Loading data with filters:', { appliedStartDate, appliedEndDate, appliedMethod, appliedPeriodType });
+      
+      // ============================================
+      // STEP 1: Get accurate totals from database (bypasses 1000 limit)
+      // ============================================
+      const { data: aggregations, error: aggError } = await supabase.rpc('get_dashboard_aggregations', {
+        p_start_date: appliedStartDate,
+        p_end_date: appliedEndDate,
+        p_payment_method_id: appliedMethod === 'all' ? null : appliedMethod
+      });
+
+      if (aggError) {
+        console.error('❌ Aggregations error:', aggError);
+      }
+
+      console.log('📊 [Database] Total invoices:', aggregations?.[0]?.total_invoices_count || 0, 'Amount:', aggregations?.[0]?.total_invoices_amount || 0);
+      console.log('📊 [Database] Total credits:', aggregations?.[0]?.total_credits_count || 0, 'Amount:', aggregations?.[0]?.total_credits_amount || 0);
+      console.log('💰 [Database] Net Sales:', aggregations?.[0]?.net_sales || 0);
+      console.log('📊 [Database] Total deposits:', aggregations?.[0]?.total_deposits_count || 0, 'Amount:', aggregations?.[0]?.total_deposits_amount || 0);
+
+      // ============================================
+      // STEP 2: Load detailed data for period comparisons (still limited to 1000)
+      // ============================================
+      // Build query filters - Get invoices
+      let invoicesQuery = supabase
+        .from('invoices')
+        .select('amount_total, sale_order_date, payment_method_id')
+        .eq('state', 'posted')
+        .gte('sale_order_date', startDate)
+        .lte('sale_order_date', endDate);
+
+      // Get credits from credit_notes table
+      let creditsQuery = supabase
+        .from('credit_notes')
+        .select('amount_total, sale_order_date, payment_method_id, original_invoice_id')
+        .eq('state', 'posted')
+        .not('original_invoice_id', 'is', null)
+        .gte('sale_order_date', startDate)
+        .lte('sale_order_date', endDate);
+
+      let depositsQuery = supabase
+        .from('deposits')
+        .select('net_amount, status, start_date, end_date, payment_method_id')
+        .or(`and(start_date.lte.${endDate},end_date.gte.${startDate})`);
+
+      // Filter by payment method if selected
+      if (selectedMethod !== 'all') {
+        invoicesQuery = invoicesQuery.eq('payment_method_id', selectedMethod);
+        creditsQuery = creditsQuery.eq('payment_method_id', selectedMethod);
+        depositsQuery = depositsQuery.eq('payment_method_id', selectedMethod);
+      }
+
+      const [{ data: invoices, error: invError }, { data: credits, error: crError }, { data: deposits }] = await Promise.all([
+        invoicesQuery,
+        creditsQuery,
+        depositsQuery
+      ]);
+
+      if (invError) console.error('❌ Invoices error:', invError);
+      if (crError) console.error('❌ Credits error:', crError);
+
+      console.log('📊 [Frontend] Loaded invoices for charts:', invoices?.length || 0);
+      console.log('📊 [Frontend] Loaded credits for charts:', credits?.length || 0);
+      console.log('📊 [Frontend] Loaded deposits for charts:', deposits?.length || 0);
+
+      // Use DATABASE totals for stats (accurate)
+      const totalInvoices = aggregations?.[0]?.total_invoices_amount || 0;
+      const totalCredits = aggregations?.[0]?.total_credits_amount || 0;
+      const netSales = aggregations?.[0]?.net_sales || 0;
+
+      // Calculate deposits from database aggregation
+      const totalDeposits = aggregations?.[0]?.total_deposits_amount || 0;
+
+      // Use loaded data for deposits breakdown (approved vs pending)
+      const approvedDeposits = deposits?.filter(d => d.status === 'approved') || [];
+      const pendingDeposits = deposits?.filter(d => d.status === 'pending') || [];
+      
+      const approvedDepositsAmount = approvedDeposits.reduce((sum, d) => sum + d.net_amount, 0);
+      const pendingDepositsAmount = pendingDeposits.reduce((sum, d) => sum + d.net_amount, 0);
+      
+      const gapAmount = netSales - approvedDepositsAmount;
+      const gapAfterPending = netSales - approvedDepositsAmount - pendingDepositsAmount;
+
+      setStats({
+        totalSales: netSales,  // Use database total
+        approvedDepositsAmount,
+        pendingDepositsAmount,
+        approvedDepositsCount: approvedDeposits.length,
+        pendingDepositsCount: pendingDeposits.length,
+        gapAmount,
+        gapAfterPending,
+      });
+
+      // ============================================
+      // STEP 3: Load period comparisons from database (accurate for all data)
+      // ============================================
+      if (appliedPeriodType === 'daily') {
+        // Use daily aggregations for day-by-day view
+        const { data: dailyData, error: dailyError } = await supabase.rpc('get_daily_aggregations', {
+          p_start_date: appliedStartDate,
+          p_end_date: appliedEndDate,
+          p_payment_method_id: appliedMethod === 'all' ? null : appliedMethod
+        });
+
+        if (dailyError) {
+          console.error('❌ Daily aggregations error:', dailyError);
+          // Fallback to frontend calculation (limited data)
+          calculatePeriodComparisons(invoices || [], credits || [], deposits || []);
+        } else {
+          console.log('📊 [Database] Daily periods:', dailyData?.length || 0);
+          
+          // Convert database results to PeriodComparison format
+          const periods: PeriodComparison[] = (dailyData || []).map((day: any) => ({
+            period: new Date(day.allocation_date).toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' }),
+            periodStart: day.allocation_date,
+            periodEnd: day.allocation_date,
+            sales: day.daily_sales,
+            approvedDeposits: day.approved_deposits,
+            pendingDeposits: day.pending_deposits,
+            gap: day.daily_gap,
+            gapAfterPending: day.daily_sales - day.approved_deposits - day.pending_deposits,
+          }));
+          
+          setPeriodComparisons(periods);
+        }
+      } else if (appliedPeriodType === 'monthly') {
+        // Use monthly aggregations (grouped from daily data)
+        const { data: monthlyData, error: monthlyError } = await supabase.rpc('get_monthly_aggregations', {
+          p_start_date: appliedStartDate,
+          p_end_date: appliedEndDate,
+          p_payment_method_id: appliedMethod === 'all' ? null : appliedMethod
+        });
+
+        if (monthlyError) {
+          console.error('❌ Monthly aggregations error:', monthlyError);
+          // Fallback to frontend calculation (limited data)
+          calculatePeriodComparisons(invoices || [], credits || [], deposits || []);
+        } else {
+          console.log('📊 [Database] Monthly periods:', monthlyData?.length || 0);
+          
+          // Convert database results to PeriodComparison format
+          const periods: PeriodComparison[] = (monthlyData || []).map((month: any) => ({
+            period: new Date(month.month_start).toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' }),
+            periodStart: month.month_start,
+            periodEnd: month.month_end,
+            sales: month.total_sales,
+            approvedDeposits: month.approved_deposits,
+            pendingDeposits: month.pending_deposits,
+            gap: month.gap,
+            gapAfterPending: month.total_sales - month.approved_deposits - month.pending_deposits,
+          }));
+          
+          setPeriodComparisons(periods);
+        }
+      } else {
+        // Use monthly aggregations
+        const { data: monthlyData, error: monthlyError } = await supabase.rpc('get_monthly_aggregations', {
+          p_start_date: appliedStartDate,
+          p_end_date: appliedEndDate,
+          p_payment_method_id: appliedMethod === 'all' ? null : appliedMethod
+        });
+
+        if (monthlyError) {
+          console.error('❌ Monthly aggregations error:', monthlyError);
+          // Fallback to frontend calculation (limited data)
+          calculatePeriodComparisons(invoices || [], credits || [], deposits || []);
+        } else {
+          console.log('📊 [Database] Monthly periods:', monthlyData?.length || 0);
+          
+          // Convert database results to PeriodComparison format
+          const periods: PeriodComparison[] = (monthlyData || []).map((month: any) => ({
+            period: month.period_month,
+            periodStart: month.period_start,
+            periodEnd: month.period_end,
+            sales: month.net_sales,
+            approvedDeposits: month.approved_deposits,
+            pendingDeposits: month.pending_deposits,
+            gap: month.net_sales - month.approved_deposits,
+            gapAfterPending: month.net_sales - month.approved_deposits - month.pending_deposits,
+          }));
+          
+          setPeriodComparisons(periods);
+        }
+      }
+    } catch (err) {
+      console.error('❌ Error loading dashboard data:', err);
+    }
+  };
+
+  const calculatePeriodComparisons = (invoices: any[], credits: any[], deposits: any[]) => {
+    const periods: PeriodComparison[] = [];
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+
+    if (periodType === 'monthly') {
+      const current = new Date(start.getFullYear(), start.getMonth(), 1);
+      const endMonth = new Date(end.getFullYear(), end.getMonth(), 1);
+      
+      while (current <= endMonth) {
+        const monthStart = new Date(current.getFullYear(), current.getMonth(), 1);
+        const monthEnd = new Date(current.getFullYear(), current.getMonth() + 1, 0);
+        
+        const monthInvoices = invoices
+          .filter(inv => {
+            const invDate = new Date(inv.sale_order_date);
+            return invDate >= monthStart && invDate <= monthEnd;
+          })
+          .reduce((sum, inv) => sum + inv.amount_total, 0);
+        
+        const monthCredits = credits
+          .filter(cr => {
+            const crDate = new Date(cr.sale_order_date);
+            return crDate >= monthStart && crDate <= monthEnd;
+          })
+          .reduce((sum, cr) => sum + Math.abs(cr.amount_total), 0);
+        
+        const monthSales = monthInvoices - monthCredits;
+
+        const monthDeposits = deposits.filter(d => {
+          const depStart = new Date(d.start_date);
+          const depEnd = new Date(d.end_date);
+          return depStart <= monthEnd && depEnd >= monthStart;
+        });
+
+        const approved = monthDeposits
+          .filter(d => d.status === 'approved')
+          .reduce((sum, d) => sum + d.net_amount, 0);
+        
+        const pending = monthDeposits
+          .filter(d => d.status === 'pending')
+          .reduce((sum, d) => sum + d.net_amount, 0);
+
+        periods.push({
+          period: monthStart.toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' }),
+          periodStart: monthStart.toISOString().split('T')[0],
+          periodEnd: monthEnd.toISOString().split('T')[0],
+          sales: monthSales,
+          approvedDeposits: approved,
+          pendingDeposits: pending,
+          gap: monthSales - approved,
+          gapAfterPending: monthSales - approved - pending,
+        });
+
+        current.setMonth(current.getMonth() + 1);
+      }
+    } else if (periodType === 'daily') {
+      const current = new Date(start);
+      
+      while (current <= end) {
+        const dayStart = new Date(current);
+        const dayEnd = new Date(current);
+        dayEnd.setHours(23, 59, 59, 999);
+        
+        const dayInvoices = invoices
+          .filter(inv => {
+            const invDate = new Date(inv.sale_order_date);
+            return invDate.toDateString() === current.toDateString();
+          })
+          .reduce((sum, inv) => sum + inv.amount_total, 0);
+        
+        const dayCredits = credits
+          .filter(cr => {
+            const crDate = new Date(cr.sale_order_date);
+            return crDate.toDateString() === current.toDateString();
+          })
+          .reduce((sum, cr) => sum + Math.abs(cr.amount_total), 0);
+        
+        const daySales = dayInvoices - dayCredits;
+
+        const dayDeposits = deposits.filter(d => {
+          const depStart = new Date(d.start_date);
+          const depEnd = new Date(d.end_date);
+          return depStart <= dayEnd && depEnd >= dayStart;
+        });
+
+        const approved = dayDeposits
+          .filter(d => d.status === 'approved')
+          .reduce((sum, d) => sum + d.net_amount, 0);
+        
+        const pending = dayDeposits
+          .filter(d => d.status === 'pending')
+          .reduce((sum, d) => sum + d.net_amount, 0);
+
+        if (daySales > 0 || approved > 0 || pending > 0) {
+          periods.push({
+            period: current.toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' }),
+            periodStart: current.toISOString().split('T')[0],
+            periodEnd: current.toISOString().split('T')[0],
+            sales: daySales,
+            approvedDeposits: approved,
+            pendingDeposits: pending,
+            gap: daySales - approved,
+            gapAfterPending: daySales - approved - pending,
+          });
+        }
+
+        current.setDate(current.getDate() + 1);
+      }
+    } else {
+      const totalInvoices = invoices.reduce((sum, inv) => sum + inv.amount_total, 0);
+      const totalCredits = credits.reduce((sum, cr) => sum + Math.abs(cr.amount_total), 0);
+      const totalSales = totalInvoices - totalCredits;
+      
+      const approved = deposits
+        .filter(d => d.status === 'approved')
+        .reduce((sum, d) => sum + d.net_amount, 0);
+      
+      const pending = deposits
+        .filter(d => d.status === 'pending')
+        .reduce((sum, d) => sum + d.net_amount, 0);
+
+      periods.push({
+        period: 'Custom Period',
+        periodStart: startDate,
+        periodEnd: endDate,
+        sales: totalSales,
+        approvedDeposits: approved,
+        pendingDeposits: pending,
+        gap: totalSales - approved,
+        gapAfterPending: totalSales - approved - pending,
+      });
+    }
+
+    setPeriodComparisons(periods);
+  };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gray-50">
+        <Navigation />
+        <div className="flex items-center justify-center h-96">
+          <div className="animate-spin rounded-full h-12 w-12 border-4 border-primary-500 border-t-transparent"></div>
+        </div>
+      </div>
+    );
+  }
+
+  const statCards = [
+    {
+      title: 'Total Sales',
+      value: formatCurrency(stats.totalSales),
+      subtitle: 'In selected period',
+      icon: DollarSign,
+      color: 'bg-green-500',
+    },
+    {
+      title: 'Approved Deposits',
+      value: formatCurrency(stats.approvedDepositsAmount),
+      subtitle: `${stats.approvedDepositsCount} deposits`,
+      icon: CheckCircle,
+      color: 'bg-blue-500',
+    },
+    {
+      title: 'Pending Deposits',
+      value: formatCurrency(stats.pendingDepositsAmount),
+      subtitle: `${stats.pendingDepositsCount} awaiting approval`,
+      icon: Clock,
+      color: 'bg-yellow-500',
+    },
+    {
+      title: 'Gap (Missing)',
+      value: formatCurrency(stats.gapAmount),
+      subtitle: stats.gapAfterPending < 0 
+        ? `✅ Covered if pending approved` 
+        : `⚠️ ${formatCurrency(stats.gapAfterPending)} still missing after pending`,
+      icon: AlertTriangle,
+      color: stats.gapAmount > 0 ? 'bg-red-500' : 'bg-green-500',
+    },
+  ];
+
+  return (
+    <div className="min-h-screen bg-gray-50">
+      <Navigation />
+      
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <div className="mb-8">
+          <h1 className="text-3xl font-bold text-gray-900">Sales vs Deposits Analysis</h1>
+          <p className="text-gray-600 mt-2">Track deposits coverage against sales by period</p>
+        </div>
+
+        {/* Filters */}
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">
+          <h3 className="text-lg font-medium text-gray-900 mb-4">Filters</h3>
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+            {/* Period Type */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Period Type</label>
+              <select
+                value={periodType}
+                onChange={(e) => setPeriodType(e.target.value as PeriodType)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              >
+                <option value="monthly">Monthly</option>
+                <option value="daily">Daily</option>
+                <option value="custom">Custom Range</option>
+              </select>
+            </div>
+
+            {/* Start Date */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Start Date</label>
+              <input
+                type="date"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              />
+            </div>
+
+            {/* End Date */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">End Date</label>
+              <input
+                type="date"
+                value={endDate}
+                onChange={(e) => setEndDate(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              />
+            </div>
+
+            {/* Payment Method */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Payment Method</label>
+              <select
+                value={selectedMethod}
+                onChange={(e) => setSelectedMethod(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              >
+                <option value="all">All Methods</option>
+                {paymentMethods.map((method) => (
+                  <option key={method.id} value={method.id}>
+                    {method.name_en}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Apply Button */}
+            <div className="flex items-end gap-2">
+              <button
+                onClick={handleApplyFilters}
+                className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium"
+              >
+                Apply Filters
+              </button>
+              
+              {/* Refresh Allocations Button */}
+              <button
+                onClick={handleRefreshAllocations}
+                disabled={refreshingAllocations}
+                title="Recalculate deposit allocations based on current invoices and deposits"
+                className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors font-medium disabled:bg-gray-400 disabled:cursor-not-allowed"
+              >
+                {refreshingAllocations ? (
+                  <>
+                    <span className="inline-block animate-spin mr-2">⟳</span>
+                    Refreshing...
+                  </>
+                ) : (
+                  '🔄 Refresh Allocations'
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Stats Cards */}
+        <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4 mb-8">
+          {statCards.map((stat, index) => {
+            const Icon = stat.icon;
+            return (
+              <div
+                key={index}
+                className="bg-white overflow-hidden shadow rounded-lg"
+              >
+                <div className="p-5">
+                  <div className="flex items-center">
+                    <div className={`flex-shrink-0 rounded-md p-3 ${stat.color}`}>
+                      <Icon className="h-6 w-6 text-white" />
+                    </div>
+                    <div className="ml-5 w-0 flex-1">
+                      <dl>
+                        <dt className="text-sm font-medium text-gray-500 truncate">
+                          {stat.title}
+                        </dt>
+                        <dd>
+                          <div className="text-2xl font-semibold text-gray-900">
+                            {stat.value}
+                          </div>
+                          <div className="mt-1 text-xs text-gray-500">
+                            {stat.subtitle}
+                          </div>
+                        </dd>
+                      </dl>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Chart */}
+        <div className="bg-white shadow rounded-lg p-6 mb-8">
+          <h3 className="text-lg font-medium text-gray-900 mb-6">Sales vs Deposits Comparison</h3>
+          {periodComparisons.length > 0 ? (
+            <div className="overflow-x-auto">
+              <div className="min-w-[600px]">
+                {/* Legend */}
+                <div className="flex justify-center gap-6 mb-6">
+                  <div className="flex items-center gap-2">
+                    <div className="w-4 h-4 bg-green-500 rounded"></div>
+                    <span className="text-sm text-gray-700">Sales</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="w-4 h-4 bg-blue-500 rounded"></div>
+                    <span className="text-sm text-gray-700">Approved Deposits</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="w-4 h-4 bg-yellow-400 rounded"></div>
+                    <span className="text-sm text-gray-700">Pending Deposits</span>
+                  </div>
+                </div>
+
+                {/* Bar Chart - Optimized with Horizontal Scrolling */}
+                <div className="relative" style={{ height: '450px' }}>
+                  {(() => {
+                    // Calculate max value once for the entire chart
+                    const maxValue = Math.max(...periodComparisons.map(p => 
+                      Math.max(p.sales, p.approvedDeposits + p.pendingDeposits)
+                    ), 1); // Minimum 1 to avoid division by zero
+                    
+                    const step = Math.ceil(maxValue / 5 / 1000) * 1000;
+                    const yAxisMax = step * 5;
+                    
+                    // Dynamic sizing based on number of periods
+                    const numPeriods = periodComparisons.length;
+                    const isLargeDataset = numPeriods > 20;
+                    const barWidth = isLargeDataset ? 30 : 80; // px per period
+                    const containerWidth = Math.max(numPeriods * (barWidth + 8), 800); // minimum 800px
+
+                    return (
+                      <div className="overflow-x-auto max-w-full">
+                        <div className="relative" style={{ height: '450px', width: `${containerWidth}px` }}>
+                          {/* Y-axis labels */}
+                          <div className="absolute left-0 top-0 bottom-12 flex flex-col justify-between text-xs text-gray-500 pr-2">
+                            {[5, 4, 3, 2, 1, 0].map(i => (
+                              <div key={i} className="text-right w-16">
+                                {formatCurrency(step * i)}
+                              </div>
+                            ))}
+                          </div>
+
+                          {/* Grid lines */}
+                          <div className="absolute left-20 right-0 top-0 bottom-12 flex flex-col justify-between">
+                            {[0, 1, 2, 3, 4, 5].map(i => (
+                              <div key={i} className="border-t border-gray-200"></div>
+                            ))}
+                          </div>
+
+                          {/* Bars Container - Optimized */}
+                          <div className="absolute left-20 right-0 top-0 bottom-12 px-2">
+                            <div className="relative h-full flex items-end gap-2">
+                              {periodComparisons.map((period, idx) => {
+                                const salesHeight = yAxisMax > 0 ? (period.sales / yAxisMax) * 100 : 0;
+                                const approvedHeight = yAxisMax > 0 ? (period.approvedDeposits / yAxisMax) * 100 : 0;
+                                const pendingHeight = yAxisMax > 0 ? (period.pendingDeposits / yAxisMax) * 100 : 0;
+
+                                return (
+                                  <div key={idx} className="flex justify-center items-end gap-0.5 h-full" style={{ width: `${barWidth}px`, flexShrink: 0 }}>
+                                    {/* Sales Bar */}
+                                    <div className="flex-1 flex flex-col justify-end items-center group relative h-full">
+                                      <div 
+                                        className="w-full bg-green-500 rounded-t hover:bg-green-600 transition-colors cursor-pointer"
+                                        style={{ height: `${salesHeight}%`, minHeight: period.sales > 0 ? '2px' : '0' }}
+                                      />
+                                      {/* Tooltip */}
+                                      <div className="absolute bottom-full mb-2 hidden group-hover:block bg-gray-900 text-white text-[10px] rounded py-1 px-2 whitespace-nowrap z-10">
+                                        {formatCurrency(period.sales)}
+                                      </div>
+                                    </div>
+
+                                    {/* Approved Bar */}
+                                    <div className="flex-1 flex flex-col justify-end items-center group relative h-full">
+                                      <div 
+                                        className="w-full bg-blue-500 rounded-t hover:bg-blue-600 transition-colors cursor-pointer"
+                                        style={{ height: `${approvedHeight}%`, minHeight: period.approvedDeposits > 0 ? '2px' : '0' }}
+                                      />
+                                      {/* Tooltip */}
+                                      <div className="absolute bottom-full mb-2 hidden group-hover:block bg-gray-900 text-white text-[10px] rounded py-1 px-2 whitespace-nowrap z-10">
+                                        {formatCurrency(period.approvedDeposits)}
+                                      </div>
+                                    </div>
+
+                                    {/* Pending Bar */}
+                                    <div className="flex-1 flex flex-col justify-end items-center group relative h-full">
+                                      <div 
+                                        className="w-full bg-yellow-400 rounded-t hover:bg-yellow-500 transition-colors cursor-pointer"
+                                        style={{ height: `${pendingHeight}%`, minHeight: period.pendingDeposits > 0 ? '2px' : '0' }}
+                                      />
+                                      {/* Tooltip */}
+                                      {period.pendingDeposits > 0 && (
+                                        <div className="absolute bottom-full mb-2 hidden group-hover:block bg-gray-900 text-white text-[10px] rounded py-1 px-2 whitespace-nowrap z-10">
+                                          {formatCurrency(period.pendingDeposits)}
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+
+                          {/* X-axis labels - Optimized */}
+                          <div className="absolute left-20 right-0 bottom-0 flex items-center gap-2 px-2 h-12" style={{ width: '100%' }}>
+                            {periodComparisons.map((period, idx) => (
+                              <div key={idx} className="flex items-center justify-center" style={{ width: `${barWidth}px`, flexShrink: 0 }}>
+                                <div className={`text-gray-600 text-center ${isLargeDataset ? 'text-[9px]' : 'text-xs'}`}>
+                                  {period.period}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+
+                {/* Info Message for Large Datasets */}
+                {periodComparisons.length > 20 && (
+                  <div className="mt-3 flex items-center gap-2 text-sm text-blue-600 bg-blue-50 p-3 rounded-lg border border-blue-200">
+                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
+                    </svg>
+                    <span>📊 Scroll horizontally to see all {periodComparisons.length} periods</span>
+                  </div>
+                )}
+
+                {/* Gap Summary Below Chart - Show All Periods */}
+                <div className="mt-8">
+                  <div className="max-h-96 overflow-y-auto">
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                      {periodComparisons.map((period, idx) => (
+                        <div key={idx} className={`rounded-lg p-5 border-2 ${
+                          period.gap > 0 ? 'bg-red-50 border-red-300' : 'bg-green-50 border-green-300'
+                        }`}>
+                          <div className="flex items-center justify-between mb-3">
+                            <div className="text-base font-bold text-gray-900">{period.period}</div>
+                            {period.gap > 0 ? (
+                              <span className="bg-red-500 text-white text-xs px-3 py-1 rounded-full font-bold">
+                                ⚠️ Missing
+                              </span>
+                            ) : (
+                              <span className="bg-green-500 text-white text-xs px-3 py-1 rounded-full font-bold">
+                                ✅ Complete
+                              </span>
+                            )}
+                          </div>
+                          
+                          <div className="space-y-2">
+                            <div className="flex justify-between items-center text-sm">
+                              <span className="text-gray-600">💰 Sales:</span>
+                              <span className="font-bold text-gray-900">{formatCurrency(period.sales)}</span>
+                            </div>
+                            <div className="flex justify-between items-center text-sm">
+                              <span className="text-gray-600">✅ Approved:</span>
+                              <span className="font-semibold text-blue-700">{formatCurrency(period.approvedDeposits)}</span>
+                            </div>
+                            {period.pendingDeposits > 0 && (
+                              <div className="flex justify-between items-center text-sm">
+                                <span className="text-gray-600">⏳ Pending:</span>
+                                <span className="font-semibold text-yellow-600">{formatCurrency(period.pendingDeposits)}</span>
+                              </div>
+                            )}
+                            
+                            <div className="pt-2 mt-2 border-t-2 border-gray-300">
+                              <div className="flex justify-between items-center">
+                                <span className="text-sm font-bold text-gray-700">Current Gap:</span>
+                                <span className={`text-lg font-bold ${period.gap > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                                  {period.gap > 0 ? '⚠️ ' : '✅ '}{formatCurrency(Math.abs(period.gap))}
+                                </span>
+                              </div>
+                              {period.pendingDeposits > 0 && (
+                                <div className="flex justify-between items-center mt-1 text-xs">
+                                  <span className="text-gray-600">If pending approved:</span>
+                                  <span className={`font-semibold ${period.gapAfterPending > 0 ? 'text-yellow-600' : 'text-green-600'}`}>
+                                    {period.gapAfterPending > 0 
+                                      ? `⚠️ Still ${formatCurrency(period.gapAfterPending)} missing` 
+                                      : '✅ Fully covered'}
+                                  </span>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="h-64 flex items-center justify-center text-gray-400">
+              No data available for selected period
+            </div>
+          )}
+        </div>
+
+        {/* Comparison Table */}
+        <div className="bg-white shadow rounded-lg overflow-hidden">
+          {/* Header with Download and Count */}
+          <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between bg-gray-50">
+            <div className="flex items-center gap-4">
+              <h3 className="text-lg font-medium text-gray-900">Detailed Comparison Table</h3>
+              <span className="text-sm text-gray-600">
+                Total: <span className="font-medium">{periodComparisons.length}</span> periods
+              </span>
+            </div>
+            <button
+              onClick={downloadComparisonCSV}
+              disabled={periodComparisons.length === 0}
+              className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 16v-4m0 0V8m0 4H8m4 0h4" />
+              </svg>
+              Download CSV
+            </button>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Period</th>
+                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Sales</th>
+                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Approved</th>
+                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Pending</th>
+                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Gap</th>
+                  <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase">Status</th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {periodComparisons.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="px-6 py-8 text-center text-gray-500">
+                      No data available
+                    </td>
+                  </tr>
+                ) : (
+                  (() => {
+                    const totalPages = Math.ceil(periodComparisons.length / itemsPerPage);
+                    const startIdx = (currentPage - 1) * itemsPerPage;
+                    const endIdx = startIdx + itemsPerPage;
+                    const paginatedData = periodComparisons.slice(startIdx, endIdx);
+                    
+                    return paginatedData.map((period, idx) => (
+                  <tr key={idx} className="hover:bg-gray-50">
+                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                      {period.period}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-right text-gray-900">
+                      {formatCurrency(period.sales)}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-right text-blue-600">
+                      {formatCurrency(period.approvedDeposits)}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-right text-yellow-600">
+                      {formatCurrency(period.pendingDeposits)}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-right font-semibold">
+                      <span className={period.gap > 0 ? 'text-red-600' : 'text-green-600'}>
+                        {formatCurrency(Math.abs(period.gap))}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-center">
+                      {period.gap === 0 ? (
+                        <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                          ✅ Complete
+                        </span>
+                      ) : period.gapAfterPending <= 0 ? (
+                        <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">
+                          ⏳ Pending
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">
+                          ⚠️ Missing
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                    ));
+                  })()
+                )}
+              </tbody>
+            </table>
+          </div>
+          
+          {/* Pagination Footer */}
+          {periodComparisons.length > 0 && (
+            <div className="px-6 py-4 border-t border-gray-200 bg-gray-50 flex items-center justify-between">
+              <div className="text-sm text-gray-600">
+                Showing {Math.min((currentPage - 1) * itemsPerPage + 1, periodComparisons.length)}-{Math.min(currentPage * itemsPerPage, periodComparisons.length)} of {periodComparisons.length} periods
+              </div>
+              
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
+                  disabled={currentPage === 1}
+                  className="p-2 hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors"
+                  title="Previous page"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                  </svg>
+                </button>
+                
+                <div className="px-4 py-2 bg-white border border-gray-300 rounded-lg">
+                  <span className="font-medium text-gray-900">{currentPage}</span>
+                  <span className="text-gray-600"> / </span>
+                  <span className="text-gray-600">{Math.ceil(periodComparisons.length / itemsPerPage)}</span>
+                </div>
+                
+                <button
+                  onClick={() => setCurrentPage(Math.min(Math.ceil(periodComparisons.length / itemsPerPage), currentPage + 1))}
+                  disabled={currentPage >= Math.ceil(periodComparisons.length / itemsPerPage)}
+                  className="p-2 hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors"
+                  title="Next page"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </main>
+    </div>
+  );
+}
