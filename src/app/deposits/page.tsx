@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import Navigation from '@/components/Navigation';
 import { auth } from '@/lib/supabase/auth';
 import { supabase } from '@/lib/supabase/client';
+import AdminDepositForm from '@/components/deposits/AdminDepositForm';
 import { Wallet, Plus, Calendar, DollarSign, CheckCircle, XCircle, Clock, Upload, Download, Eye, Trash2, Edit, Filter, ChevronDown, ChevronUp, FileText, Image as ImageIcon, File } from 'lucide-react';
 
 interface Deposit {
@@ -45,6 +46,7 @@ export default function DepositsPage() {
   const [deposits, setDeposits] = useState<Deposit[]>([]);
   const [filteredDeposits, setFilteredDeposits] = useState<Deposit[]>([]);
   const [showForm, setShowForm] = useState(false);
+  const [showAdminDepositForm, setShowAdminDepositForm] = useState(false);
   const [paymentMethods, setPaymentMethods] = useState<any[]>([]);
   const [expandedRow, setExpandedRow] = useState<string | null>(null);
   const [editingDeposit, setEditingDeposit] = useState<Deposit | null>(null);
@@ -624,15 +626,26 @@ export default function DepositsPage() {
                 </p>
               </div>
             </div>
-            {!isAdmin && (
-              <button
-                onClick={() => setShowForm(!showForm)}
-                className="flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700"
-              >
-                <Plus className="h-4 w-4" />
-                New Deposit
-              </button>
-            )}
+            <div className="flex gap-2">
+              {isAdmin && (
+                <button
+                  onClick={() => setShowAdminDepositForm(true)}
+                  className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700"
+                >
+                  <Plus className="h-4 w-4" />
+                  Admin Add Deposit
+                </button>
+              )}
+              {!isAdmin && (
+                <button
+                  onClick={() => setShowForm(!showForm)}
+                  className="flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700"
+                >
+                  <Plus className="h-4 w-4" />
+                  New Deposit
+                </button>
+              )}
+            </div>
           </div>
         </div>
 
@@ -1286,6 +1299,15 @@ export default function DepositsPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Admin Add Deposit Modal */}
+      {showAdminDepositForm && (
+        <AdminDepositForm
+          onClose={() => setShowAdminDepositForm(false)}
+          onSuccess={() => loadDeposits()}
+          currentUserId={currentUserId}
+        />
       )}
     </div>
   );
