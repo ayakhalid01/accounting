@@ -648,7 +648,25 @@ export default function DepositsPage() {
           </div>
         </div>
 
-        {/* Filters */}
+        {/* Deposits Navigation Tabs */}
+        <div className="mb-6 border-b border-gray-200">
+          <nav className="flex gap-8">
+            <button
+              onClick={() => router.push('/deposits')}
+              className="px-0 py-3 border-b-2 border-primary-600 text-primary-600 font-medium"
+            >
+              Deposits
+            </button>
+            {isAdmin && (
+              <button
+                onClick={() => router.push('/deposits/settings')}
+                className="px-0 py-3 border-b-2 border-transparent text-gray-600 hover:text-gray-900 hover:border-gray-300 font-medium"
+              >
+                Settings
+              </button>
+            )}
+          </nav>
+        </div>        {/* Filters */}
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">
           <div className="flex items-center gap-2 mb-4">
             <Filter className="h-5 w-5 text-gray-600" />

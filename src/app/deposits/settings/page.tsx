@@ -276,7 +276,23 @@ export default function DepositSettingsPage() {
           <p className="text-gray-600">Configure deposit processing for each payment method</p>
         </div>
 
-        {/* Alerts */}
+        {/* Deposits Navigation Tabs */}
+        <div className="mb-6 border-b border-gray-200">
+          <nav className="flex gap-8">
+            <button
+              onClick={() => router.push('/deposits')}
+              className="px-0 py-3 border-b-2 border-transparent text-gray-600 hover:text-gray-900 hover:border-gray-300 font-medium"
+            >
+              Deposits
+            </button>
+            <button
+              onClick={() => router.push('/deposits/settings')}
+              className="px-0 py-3 border-b-2 border-blue-600 text-blue-600 font-medium"
+            >
+              Settings
+            </button>
+          </nav>
+        </div>        {/* Alerts */}
         {error && (
           <div className="mb-6 p-4 bg-red-50 border border-red-300 rounded-lg flex items-start gap-3">
             <AlertCircle className="w-5 h-5 text-red-600 mt-0.5 flex-shrink-0" />
