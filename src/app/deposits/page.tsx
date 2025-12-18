@@ -1471,28 +1471,28 @@ export default function DepositsPage() {
               Download CSV
             </button>
           </div>
-          <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-gray-200">
+          <div className="w-full overflow-x-auto">
+            {/* Table uses auto layout by default and fixes on md+; allow horizontal scroll when needed */}
+            <table className="w-full table-auto md:table-fixed divide-y divide-gray-200">
               <thead className="bg-gray-50">
                 <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase w-10"></th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">User</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date Range</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Payment Method</th>
-                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Total</th>
-                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Tax</th>
-                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Net Amount</th>
-                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Gap Uncovered</th>
-                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Remaining</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Files</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
-                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Actions</th>
+                  <th className="px-2 py-2 text-left text-xs font-medium text-gray-500 uppercase w-8"></th>
+                  <th className="px-2 py-2 text-left text-xs font-medium text-gray-500 uppercase w-32">Date Range</th>
+                  <th className="px-2 py-2 text-left text-xs font-medium text-gray-500 uppercase w-40">Payment Method</th>
+                  <th className="px-2 py-2 text-right text-xs font-medium text-gray-500 uppercase w-24">Total</th>
+                  <th className="px-2 py-2 text-right text-xs font-medium text-gray-500 uppercase w-20">Tax</th>
+                  <th className="px-2 py-2 text-right text-xs font-medium text-gray-500 uppercase w-24">Net Amount</th>
+                  <th className="px-2 py-2 text-right text-xs font-medium text-gray-500 uppercase w-32">Gap Uncovered</th>
+                  <th className="px-2 py-2 text-right text-xs font-medium text-gray-500 uppercase w-24">Remaining</th>
+                  <th className="px-2 py-2 text-left text-xs font-medium text-gray-500 uppercase w-20">Files</th>
+                  <th className="px-2 py-2 text-left text-xs font-medium text-gray-500 uppercase w-20">Status</th>
+                  <th className="px-2 py-2 text-right text-xs font-medium text-gray-500 uppercase w-36">Actions</th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
                 {filteredDeposits.length === 0 ? (
                   <tr>
-                    <td colSpan={12} className="px-6 py-12 text-center text-gray-500">
+                    <td colSpan={11} className="px-3 py-12 text-center text-gray-500">
                       <Wallet className="mx-auto h-12 w-12 text-gray-300 mb-2" />
                       <p>No deposits found</p>
                     </td>
@@ -1507,7 +1507,7 @@ export default function DepositsPage() {
                     return paginatedDeposits.map((deposit) => (
                     <React.Fragment key={deposit.id}>
                       <tr className="hover:bg-gray-50">
-                        <td className="px-6 py-4">
+                        <td className="px-3 py-3">
                           <button
                             onClick={() => setExpandedRow(expandedRow === deposit.id ? null : deposit.id)}
                             className="text-gray-600 hover:text-gray-900"
@@ -1519,23 +1519,14 @@ export default function DepositsPage() {
                             )}
                           </button>
                         </td>
-                        <td className="px-6 py-4 text-sm text-gray-900">
-                          <div className="flex items-center gap-2">
-                            <div className="flex-shrink-0 h-8 w-8 bg-blue-100 rounded-full flex items-center justify-center">
-                              <span className="text-blue-600 text-xs font-semibold">
-                                {deposit.user_email?.charAt(0).toUpperCase()}
-                              </span>
-                            </div>
-                            <span className="text-sm font-medium">{deposit.user_email}</span>
-                          </div>
-                        </td>
-                        <td className="px-6 py-4 text-sm text-gray-900">
+
+                        <td className="px-3 py-3 text-sm text-gray-900 whitespace-normal">
                           <div className="flex items-center gap-1">
                             <Calendar className="h-4 w-4 text-gray-400" />
                             {new Date(deposit.start_date).toLocaleDateString()} - {new Date(deposit.end_date).toLocaleDateString()}
                           </div>
                         </td>
-                        <td className="px-6 py-4 text-sm text-gray-900">
+                        <td className="px-3 py-3 text-sm text-gray-900 whitespace-normal break-words">
                           <div>{deposit.payment_methods?.name_en || deposit.payment_method_name || 'N/A'}</div>
                           {deposit.method_group && deposit.method_group.length > 0 && (
                             <div className="text-xs text-gray-500 mt-1">
@@ -1559,16 +1550,16 @@ export default function DepositsPage() {
                             </div>
                           )}
                         </td>
-                        <td className="px-6 py-4 text-sm text-right text-gray-900">
+                        <td className="px-3 py-3 text-sm text-right text-gray-900">
                           {deposit.total_amount.toLocaleString()} EGP
                         </td>
-                        <td className="px-6 py-4 text-sm text-right text-gray-900">
+                        <td className="px-3 py-3 text-sm text-right text-gray-900">
                           {deposit.tax_amount.toLocaleString()} EGP
                         </td>
-                        <td className="px-6 py-4 text-sm text-right font-semibold text-blue-600">
+                        <td className="px-3 py-3 text-sm text-right font-semibold text-blue-600">
                           {deposit.net_amount.toLocaleString()} EGP
                         </td>
-                        <td className="px-6 py-4 text-sm text-right text-red-600 font-medium">
+                        <td className="px-3 py-3 text-sm text-right text-red-600 font-medium">
                           {allocationPreview[deposit.id] && deposit.status !== 'approved' ? (
                             typeof allocationPreview[deposit.id]!.gap_uncovered === 'number' ? (
                               `${allocationPreview[deposit.id]!.gap_uncovered.toLocaleString()} EGP (preview)`
@@ -1581,7 +1572,7 @@ export default function DepositsPage() {
                             <span className="text-gray-400">N/A</span>
                           ))}
                         </td>
-                        <td className="px-6 py-4 text-sm text-right text-orange-600 font-medium">
+                        <td className="px-3 py-3 text-sm text-right text-orange-600 font-medium">
                           {allocationPreview[deposit.id] && deposit.status !== 'approved' ? (
                             typeof allocationPreview[deposit.id]!.remaining === 'number' ? (
                               `${allocationPreview[deposit.id]!.remaining.toLocaleString()} EGP (preview)`
@@ -1594,7 +1585,7 @@ export default function DepositsPage() {
                             <span className="text-gray-400">N/A</span>
                           ))}
                         </td>
-                        <td className="px-6 py-4 text-sm">
+                        <td className="px-3 py-3 text-sm whitespace-normal">
                           {deposit.proof_files && deposit.proof_files.length > 0 ? (
                             <div className="flex flex-col gap-1">
                               {deposit.proof_files.map((file: any, idx: number) => (
@@ -1607,8 +1598,7 @@ export default function DepositsPage() {
                                   download={file.name}
                                 >
                                   <File className="h-4 w-4" />
-                                  <span className="truncate max-w-[90px]">{file.name}</span>
-                                  <span className="text-xs text-gray-500">({(file.size/1024).toFixed(1)} KB)</span>
+                                  <span className="truncate max-w-[150px]">{file.name}</span>
                                 </a>
                               ))}
                             </div>
@@ -1616,7 +1606,7 @@ export default function DepositsPage() {
                             <span className="text-gray-400">No files</span>
                           )}
                         </td>
-                        <td className="px-6 py-4 text-sm">
+                        <td className="px-3 py-3 text-sm whitespace-normal">
                           <span className={`inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded-full ${
                             deposit.status === 'approved' ? 'bg-green-100 text-green-800' :
                             deposit.status === 'rejected' ? 'bg-red-100 text-red-800' :
@@ -1631,19 +1621,19 @@ export default function DepositsPage() {
                             <p className="text-xs text-red-600 mt-1">{deposit.rejection_reason}</p>
                           )}
                         </td>
-                        <td className="px-6 py-4 text-sm text-right">
-                          <div className="flex gap-2 justify-end">
+                        <td className="px-3 py-3 text-sm text-right">
+                          <div className="flex flex-wrap gap-2 justify-end items-center">
                             {isAdmin && deposit.status === 'pending' && (
                               <>
                                 <button
                                   onClick={() => handleApprove(deposit.id)}
-                                  className="px-3 py-1 bg-green-600 text-white rounded hover:bg-green-700 text-xs"
+                                  className="px-2 py-1 bg-green-600 text-white rounded hover:bg-green-700 text-xs whitespace-nowrap"
                                 >
                                   Approve
                                 </button>
                                 <button
                                   onClick={() => handleReject(deposit.id)}
-                                  className="px-3 py-1 bg-red-600 text-white rounded hover:bg-red-700 text-xs"
+                                  className="px-2 py-1 bg-red-600 text-white rounded hover:bg-red-700 text-xs whitespace-nowrap"
                                 >
                                   Reject
                                 </button>
@@ -1653,7 +1643,7 @@ export default function DepositsPage() {
                           <div className="flex flex-col items-end">
                             <button
                               onClick={() => previewAllocation(deposit, true)}
-                              className="px-3 py-1 bg-blue-100 text-blue-700 rounded hover:bg-blue-200 text-xs"
+                              className="px-2 py-1 bg-blue-100 text-blue-700 rounded hover:bg-blue-200 text-xs whitespace-nowrap"
                               disabled={previewLoadingIds.has(deposit.id)}
                               title="Preview allocation including this deposit (simulate approval)"
                             >
@@ -1669,7 +1659,7 @@ export default function DepositsPage() {
                             {isAdmin && (
                               <button
                                 onClick={() => handleDelete(deposit.id)}
-                                className="px-3 py-1 bg-red-600 text-white rounded hover:bg-red-700 text-xs flex items-center gap-1"
+                                className="px-2 py-1 bg-red-600 text-white rounded hover:bg-red-700 text-xs flex items-center gap-1 whitespace-nowrap"
                                 disabled={deletingIds.has(deposit.id)}
                                 title="Delete this deposit"
                               >
@@ -1704,7 +1694,7 @@ export default function DepositsPage() {
                       {/* Expanded Row - File Preview */}
                       {expandedRow === deposit.id && (
                         <tr className="bg-gray-50">
-                          <td colSpan={12} className="px-6 py-4">
+                          <td colSpan={11} className="px-3 py-4">
                             <div className="space-y-4">
                               {deposit.notes && (
                                 <div>

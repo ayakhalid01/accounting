@@ -1232,13 +1232,13 @@ export default function DashboardPage() {
         </div>
 
         {/* Stats Cards */}
-        <div className="grid grid-cols-1 gap-8 sm:grid-cols-2 lg:grid-cols-5 mb-8">
+        <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 md:grid-cols-3 mb-8">
           {statCards.map((stat, index) => {
             const Icon = stat.icon;
             return (
               <div
                 key={index}
-                className="bg-white overflow-hidden shadow rounded-lg min-w-[260px]"
+                className="bg-white overflow-hidden shadow rounded-lg min-w-[260px] m-2"
               >
                 <div className="p-5">
                   <div className="flex items-center">
