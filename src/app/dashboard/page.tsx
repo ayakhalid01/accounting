@@ -32,7 +32,8 @@ interface PeriodComparison {
   period: string;
   periodStart: string;
   periodEnd: string;
-  sales: number;
+  sales: number; // invoices net sales (default shown)
+  dailySalesAllocations?: number; // sum from deposit_allocations (may be smaller)
   approvedDeposits: number;
   pendingDeposits: number;
   gap: number;
@@ -72,6 +73,9 @@ export default function DashboardPage() {
   
   const [periodComparisons, setPeriodComparisons] = useState<PeriodComparison[]>([]);
   const [paymentMethods, setPaymentMethods] = useState<any[]>([]);
+  // Per-method summaries for current filters
+  const [methodSummaries, setMethodSummaries] = useState<Array<any>>([]);
+  const [loadingMethodSummaries, setLoadingMethodSummaries] = useState(false);
   
   // Filters - Restored from localStorage
   const [periodType, setPeriodType] = useState<PeriodType>(savedFilters?.periodType || 'monthly');
@@ -128,6 +132,124 @@ export default function DashboardPage() {
   // Pagination for comparison table
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 10;
+
+  // Pagination for Methods table
+  const [methodPage, setMethodPage] = useState(1);
+  const [methodItemsPerPage, setMethodItemsPerPage] = useState(10);
+
+  // Helper to fetch all pages from Supabase (avoids 1000-row limit)
+  const fetchAllRecords = async (query: any) => {
+    const pageSize = 1000;
+    let offset = 0;
+    const all: any[] = [];
+
+    while (true) {
+      const { data, error } = await query.range(offset, offset + pageSize - 1);
+      if (error) {
+        console.error('❌ Error fetching paginated records:', error);
+        throw error;
+      }
+      all.push(...(data || []));
+      if (!data || data.length < pageSize) break;
+      offset += pageSize;
+    }
+
+    return all;
+  };
+
+  // Method summaries helper
+  const computeMethodSummaries = (
+    invoices: any[] = [],
+    credits: any[] = [],
+    allocations: any[] = [],
+    depositsArr: any[] = []
+  ) => {
+    setLoadingMethodSummaries(true);
+    try {
+      const invoiceMap: Record<string, number> = {};
+      invoices.forEach((inv: any) => {
+        const pm = inv.payment_method_id || 'unknown';
+        invoiceMap[pm] = (invoiceMap[pm] || 0) + Number(inv.amount_total || 0);
+      });
+
+  /* RPC helper moved to top-level: fetchMethodSummariesFromDb(sDate,eDate,method) */
+
+  // computeMethodSummaries continues...
+
+      const creditsMap: Record<string, number> = {};
+      credits.forEach((cr: any) => {
+        const pm = cr.payment_method_id || 'unknown';
+        creditsMap[pm] = (creditsMap[pm] || 0) + Math.abs(Number(cr.amount_total || 0));
+      });
+
+      const allocationsMap: Record<string, number> = {};
+      allocations.forEach((a: any) => {
+        const pm = a.payment_method_id || 'unknown';
+        allocationsMap[pm] = (allocationsMap[pm] || 0) + Number(a.allocated_amount || 0);
+      });
+
+      const pendingMap: Record<string, number> = {};
+      depositsArr.forEach((d: any) => {
+        if (d.status === 'pending') {
+          const pm = d.payment_method_id || 'unknown';
+          pendingMap[pm] = (pendingMap[pm] || 0) + Number(d.net_amount || 0);
+        }
+      });
+
+      const keys = new Set<string>([...
+        Object.keys(invoiceMap),
+        ...Object.keys(creditsMap),
+        ...Object.keys(allocationsMap),
+        ...Object.keys(pendingMap)
+      ]);
+
+      // keep existing behavior if DB RPC is unavailable; consumer will still receive methodSummaries
+      // (the RPC approach is preferred for performance and will be used where available)
+
+      const summaries = Array.from(keys).map(k => {
+        const method = paymentMethods.find(pm => pm.id === k) || { id: k, name_en: k };
+        const invoicesAmt = invoiceMap[k] || 0;
+        const creditsAmt = creditsMap[k] || 0;
+        const netInvoices = invoicesAmt - (creditsAmt || 0);
+        const approvedAlloc = allocationsMap[k] || 0;
+        const pendingAmt = pendingMap[k] || 0;
+        const gap = netInvoices - approvedAlloc;
+        return {
+          payment_method_id: k,
+          name: method.name_en || method.name || k,
+          netInvoices,
+          approvedAlloc,
+          pendingAmt,
+          gap
+        };
+      }).sort((a,b) => b.netInvoices - a.netInvoices);
+
+      setMethodSummaries(summaries);
+    } finally {
+      setLoadingMethodSummaries(false);
+    }
+  };
+
+  // RPC helper to fetch per-method summaries from the DB (fast)
+  const fetchMethodSummariesFromDb = async (sDate: string, eDate: string, method: string) => {
+    try {
+      const { data, error } = await supabase.rpc('get_method_summaries', {
+        p_start_date: sDate,
+        p_end_date: eDate,
+        p_payment_method_id: method === 'all' ? null : method
+      });
+
+      if (error) {
+        console.error('❌ get_method_summaries RPC error:', error);
+        return null;
+      }
+
+      return data || [];
+    } catch (err) {
+      console.error('❌ Exception calling get_method_summaries:', err);
+      return null;
+    }
+  };
 
   // ============================================
   // Apply Filters (only when user clicks Apply button)
@@ -188,12 +310,13 @@ export default function DashboardPage() {
     }
 
     // Prepare CSV headers
-    const headers = ['Period', 'Sales (EGP)', 'Approved Deposits (EGP)', 'Pending Deposits (EGP)', 'Gap (EGP)', 'Status'];
+    const headers = ['Period', 'Sales (invoices) (EGP)', 'Sales (allocations) (EGP)', 'Approved Deposits (EGP)', 'Pending Deposits (EGP)', 'Gap (EGP)', 'Status'];
 
     // Prepare CSV rows
     const rows = periodComparisons.map(period => [
       period.period,
       period.sales,
+      period.dailySalesAllocations || 0,
       period.approvedDeposits,
       period.pendingDeposits,
       Math.abs(period.gap),
@@ -281,6 +404,11 @@ export default function DashboardPage() {
     }
   }, [appliedStartDate, appliedEndDate, appliedMethod, appliedPeriodType]);
 
+  // Reset method table page when filters, results, or page size change
+  useEffect(() => {
+    setMethodPage(1);
+  }, [appliedMethod, methodSummaries.length, methodItemsPerPage]);
+
   const loadPaymentMethods = async () => {
     try {
       const { data } = await supabase
@@ -366,16 +494,42 @@ export default function DashboardPage() {
         allocationsQuery = allocationsQuery.eq('payment_method_id', filterMethod);
       }
 
-      const [{ data: invoices, error: invError }, { data: credits, error: crError }, { data: deposits }, { data: allocations, error: allocError }] = await Promise.all([
-        invoicesQuery,
-        creditsQuery,
-        depositsQuery,
-        allocationsQuery
-      ]);
+      // Fetch ALL matching records using paginated queries to avoid the 1000-row limit
+      let invoices: any[] = [];
+      let credits: any[] = [];
+      let deposits: any[] = [];
+      let allocations: any[] = [];
 
-      if (invError) console.error('❌ Invoices error:', invError);
-      if (crError) console.error('❌ Credits error:', crError);
-      if (allocError) console.error('❌ Allocations error:', allocError);
+      try {
+        invoices = await fetchAllRecords(invoicesQuery);
+        credits = await fetchAllRecords(creditsQuery);
+        deposits = await fetchAllRecords(depositsQuery);
+        allocations = await fetchAllRecords(allocationsQuery);
+      } catch (err) {
+        console.error('❌ Error fetching full dataset for summaries:', err);
+      }
+
+      // Try server-side RPC for method summaries (fast, avoids transferring all rows)
+      try {
+        const methods = await fetchMethodSummariesFromDb(filterStartDate, filterEndDate, filterMethod);
+        if (methods && methods.length) {
+          const summaries = (methods || []).map((m: any) => ({
+            payment_method_id: m.payment_method_id,
+            name: m.name || 'Unknown',
+            netInvoices: Number(m.net_invoices || 0),
+            approvedAlloc: Number(m.approved_alloc || 0),
+            pendingAmt: Number(m.pending_amt || 0),
+            gap: Number(m.gap || 0)
+          }));
+          setMethodSummaries(summaries);
+        } else {
+          // Fallback to client-side computation (if RPC returns no rows)
+          computeMethodSummaries(invoices || [], credits || [], allocations || [], deposits || []);
+        }
+      } catch (err) {
+        console.error('❌ get_method_summaries RPC failed, falling back to client:', err);
+        computeMethodSummaries(invoices || [], credits || [], allocations || [], deposits || []);
+      }
 
       console.log('📊 [Frontend] Loaded invoices for charts:', invoices?.length || 0);
       console.log('📊 [Frontend] Loaded credits for charts:', credits?.length || 0);
@@ -471,11 +625,12 @@ export default function DashboardPage() {
             period: new Date(day.allocation_date).toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' }),
             periodStart: day.allocation_date,
             periodEnd: day.allocation_date,
-            sales: day.daily_sales,
-            approvedDeposits: day.approved_deposits,
-            pendingDeposits: day.pending_deposits,
-            gap: day.daily_gap,
-            gapAfterPending: day.daily_sales - day.approved_deposits - day.pending_deposits,
+            sales: Number(day.daily_sales_invoices || 0),
+            dailySalesAllocations: Number(day.daily_sales_allocations || 0),
+            approvedDeposits: Number(day.approved_deposits || 0),
+            pendingDeposits: Number(day.pending_deposits || 0),
+            gap: Number(day.daily_gap || 0),
+            gapAfterPending: Number((day.daily_sales_invoices || 0) - (day.approved_deposits || 0)),
           }));
           
           setPeriodComparisons(periods);
@@ -497,7 +652,7 @@ export default function DashboardPage() {
           
           // Convert database results to PeriodComparison format
           const periods: PeriodComparison[] = (monthlyData || []).map((month: any) => ({
-            period: new Date(month.month_start).toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' }),
+            period: new Date(month.month_start).toLocaleDateString('en-US', { month: 'short', year: 'numeric' }),
             periodStart: month.month_start,
             periodEnd: month.month_end,
             sales: month.total_sales,
@@ -608,16 +763,46 @@ export default function DashboardPage() {
         allocationsQuery = allocationsQuery.eq('payment_method_id', appliedMethod);
       }
 
-      const [{ data: invoices, error: invError }, { data: credits, error: crError }, { data: deposits }, { data: allocations, error: allocError }] = await Promise.all([
-        invoicesQuery,
-        creditsQuery,
-        depositsQuery,
-        allocationsQuery
-      ]);
+      // Fetch ALL matching records using paginated queries to avoid the 1000-row limit
+      let invoices: any[] = [];
+      let credits: any[] = [];
+      let deposits: any[] = [];
+      let allocations: any[] = [];
 
-      if (invError) console.error('❌ Invoices error:', invError);
-      if (crError) console.error('❌ Credits error:', crError);
-      if (allocError) console.error('❌ Allocations error:', allocError);
+      try {
+        invoices = await fetchAllRecords(invoicesQuery);
+        credits = await fetchAllRecords(creditsQuery);
+        deposits = await fetchAllRecords(depositsQuery);
+        allocations = await fetchAllRecords(allocationsQuery);
+      } catch (err) {
+        console.error('❌ Error fetching full dataset for summaries:', err);
+      }
+
+      // Try server-side RPC for method summaries (fast, avoids transferring all rows)
+      try {
+        const methods = await fetchMethodSummariesFromDb(appliedStartDate, appliedEndDate, appliedMethod);
+        if (methods && methods.length) {
+          const summaries = (methods || []).map((m: any) => ({
+            payment_method_id: m.payment_method_id,
+            name: m.name || 'Unknown',
+            netInvoices: Number(m.net_invoices || 0),
+            approvedAlloc: Number(m.approved_alloc || 0),
+            pendingAmt: Number(m.pending_amt || 0),
+            gap: Number(m.gap || 0)
+          }));
+          setMethodSummaries(summaries);
+        } else {
+          // Fallback to client-side computation (if RPC returns no rows)
+          computeMethodSummaries(invoices || [], credits || [], allocations || [], deposits || []);
+        }
+      } catch (err) {
+        console.error('❌ get_method_summaries RPC failed, falling back to client:', err);
+        computeMethodSummaries(invoices || [], credits || [], allocations || [], deposits || []);
+      }
+
+      if (invoices && invoices.length >= 1000) console.log('⚠️ Fetched >=1000 invoices (paginated)');
+      if (credits && credits.length >= 1000) console.log('⚠️ Fetched >=1000 credits (paginated)');
+      if (allocations && allocations.length >= 1000) console.log('⚠️ Fetched >=1000 allocations (paginated)');
 
       console.log('📊 [Frontend] Loaded invoices for charts:', invoices?.length || 0);
       console.log('📊 [Frontend] Loaded credits for charts:', credits?.length || 0);
@@ -710,11 +895,12 @@ export default function DashboardPage() {
             period: new Date(day.allocation_date).toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' }),
             periodStart: day.allocation_date,
             periodEnd: day.allocation_date,
-            sales: day.daily_sales,
-            approvedDeposits: day.approved_deposits,
-            pendingDeposits: day.pending_deposits,
-            gap: day.daily_gap,
-            gapAfterPending: day.daily_sales - day.approved_deposits - day.pending_deposits,
+            sales: Number(day.daily_sales_invoices || 0),
+            dailySalesAllocations: Number(day.daily_sales_allocations || 0),
+            approvedDeposits: Number(day.approved_deposits || 0),
+            pendingDeposits: Number(day.pending_deposits || 0),
+            gap: Number(day.daily_gap || 0),
+            gapAfterPending: Number((day.daily_sales_invoices || 0) - (day.approved_deposits || 0)),
           }));
           
           setPeriodComparisons(periods);
@@ -736,7 +922,7 @@ export default function DashboardPage() {
           
           // Convert database results to PeriodComparison format
           const periods: PeriodComparison[] = (monthlyData || []).map((month: any) => ({
-            period: new Date(month.month_start).toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' }),
+            period: new Date(month.month_start).toLocaleDateString('en-US', { month: 'short', year: 'numeric' }),
             periodStart: month.month_start,
             periodEnd: month.month_end,
             sales: month.total_sales,
@@ -1064,16 +1250,8 @@ export default function DashboardPage() {
     setPeriodComparisons(periods);
   };
 
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-gray-50">
-        <Navigation />
-        <div className="flex items-center justify-center h-96">
-          <div className="animate-spin rounded-full h-12 w-12 border-4 border-primary-500 border-t-transparent"></div>
-        </div>
-      </div>
-    );
-  }
+  // Don't block rendering with a full-screen spinner on initial load so skeletons can display in-place.
+  // The UI components (stat cards, chart, method table) render skeletons when `loading` or `loadingMethodSummaries` are true.
 
   const statCards = [
     {
@@ -1233,44 +1411,112 @@ export default function DashboardPage() {
 
         {/* Stats Cards */}
         <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 md:grid-cols-3 mb-8">
-          {statCards.map((stat, index) => {
-            const Icon = stat.icon;
-            return (
-              <div
-                key={index}
-                className="bg-white overflow-hidden shadow rounded-lg min-w-[260px] m-2"
-              >
-                <div className="p-5">
+          {loading ? (
+            // Skeleton placeholders while loading
+            Array.from({ length: 3 }).map((_, i) => (
+              <div key={i} className="bg-white overflow-hidden shadow rounded-lg min-w-[260px] m-2">
+                <div className="p-5 animate-pulse">
                   <div className="flex items-center">
-                    <div className={`flex-shrink-0 rounded-md p-3 ${stat.color}`}>
-                      <Icon className="h-6 w-6 text-white" />
-                    </div>
+                    <div className="flex-shrink-0 rounded-md p-3 bg-gray-200 w-12 h-12" />
                     <div className="ml-5 w-0 flex-1">
                       <dl>
-                        <dt className="text-sm font-medium text-gray-500 truncate">
-                          {stat.title}
-                        </dt>
-                        <dd>
-                          <div className="text-2xl font-semibold text-gray-900 min-w-[220px] whitespace-nowrap">
-                            {stat.value}
-                          </div>
-                          <div className="mt-1 text-xs text-gray-500">
-                            {stat.subtitle}
-                          </div>
+                        <dt className="h-4 bg-gray-200 rounded w-32" />
+                        <dd className="mt-3">
+                          <div className="h-8 bg-gray-200 rounded w-40" />
+                          <div className="mt-2 h-3 bg-gray-200 rounded w-24" />
                         </dd>
                       </dl>
                     </div>
                   </div>
                 </div>
               </div>
-            );
-          })}
+            ))
+          ) : (
+            statCards.map((stat, index) => {
+              const Icon = stat.icon;
+              return (
+                <div
+                  key={index}
+                  className="bg-white overflow-hidden shadow rounded-lg min-w-[260px] m-2"
+                >
+                  <div className="p-5">
+                    <div className="flex items-center">
+                      <div className={`flex-shrink-0 rounded-md p-3 ${stat.color}`}>
+                        <Icon className="h-6 w-6 text-white" />
+                      </div>
+                      <div className="ml-5 w-0 flex-1">
+                        <dl>
+                          <dt className="text-sm font-medium text-gray-500 truncate">
+                            {stat.title}
+                          </dt>
+                          <dd>
+                            <div className="text-2xl font-semibold text-gray-900 min-w-[220px] whitespace-nowrap">
+                              {stat.value}
+                            </div>
+                            <div className="mt-1 text-xs text-gray-500">
+                              {stat.subtitle}
+                            </div>
+                          </dd>
+                        </dl>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })
+          )}
         </div>
 
         {/* Chart */}
         <div className="bg-white shadow rounded-lg p-6 mb-8">
           <h3 className="text-lg font-medium text-gray-900 mb-6">Sales vs Deposits Comparison</h3>
-          {periodComparisons.length > 0 ? (
+          {loading ? (
+            // Chart skeleton while loading
+            <div className="overflow-x-auto">
+              <div className="min-w-[600px]">
+                <div className="flex justify-center gap-6 mb-6 animate-pulse">
+                  <div className="w-24 h-4 bg-gray-200 rounded"></div>
+                  <div className="w-36 h-4 bg-gray-200 rounded"></div>
+                  <div className="w-28 h-4 bg-gray-200 rounded"></div>
+                </div>
+                <div className="relative" style={{ height: '450px' }}>
+                  <div className="overflow-x-auto max-w-full">
+                    <div className="relative" style={{ height: '450px', width: '100%' }}>
+                      <div className="absolute left-0 top-0 bottom-12 flex flex-col justify-between text-xs text-gray-200 pr-2">
+                        {[5, 4, 3, 2, 1, 0].map(i => (
+                          <div key={i} className="h-4 bg-gray-200 rounded w-12 mb-2"></div>
+                        ))}
+                      </div>
+
+                      <div className="absolute left-20 right-0 top-0 bottom-12 flex flex-col justify-between">
+                        {[0, 1, 2, 3, 4, 5].map(i => (
+                          <div key={i} className="border-t border-gray-100"></div>
+                        ))}
+                      </div>
+
+                      <div className="absolute left-20 right-0 top-0 bottom-12 px-2">
+                        <div className="relative h-full flex items-end gap-2">
+                          {Array.from({ length: 8 }).map((_, idx) => (
+                            <div key={idx} className="flex-1 h-full flex items-end" style={{ minWidth: 60 }}>
+                              <div className="w-full bg-gray-200 rounded-t" style={{ height: `${20 + (idx % 4) * 10}%` }} />
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="absolute left-20 right-0 bottom-0 flex items-center gap-2 px-2 h-12" style={{ width: '100%' }}>
+                        {Array.from({ length: 8 }).map((_, i) => (
+                          <div key={i} className="flex items-center justify-center" style={{ width: 80, flexShrink: 0 }}>
+                            <div className="h-3 bg-gray-200 rounded w-20"></div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : periodComparisons.length > 0 ? (
             <div className="overflow-x-auto">
               <div className="min-w-[600px]">
                 {/* Legend */}
@@ -1428,7 +1674,12 @@ export default function DashboardPage() {
                           <div className="space-y-2">
                             <div className="flex justify-between items-center text-sm">
                               <span className="text-gray-600">💰 Sales:</span>
-                              <span className="font-bold text-gray-900">{formatCurrency(period.sales)}</span>
+                              <div className="text-right">
+                                <div className="font-bold text-gray-900">{formatCurrency(period.sales)}</div>
+                                {typeof period.dailySalesAllocations === 'number' && Math.abs(period.dailySalesAllocations - period.sales) > 0.5 && (
+                                  <div className="text-xs text-gray-500">Alloc: {formatCurrency(period.dailySalesAllocations)}</div>
+                                )}
+                              </div>
                             </div>
                             <div className="flex justify-between items-center text-sm">
                               <span className="text-gray-600">✅ Approved:</span>
@@ -1477,23 +1728,163 @@ export default function DashboardPage() {
         {/* Comparison Table */}
         <div className="bg-white shadow rounded-lg overflow-hidden">
           {/* Header with Download and Count */}
-          <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between bg-gray-50">
-            <div className="flex items-center gap-4">
+          <div className="px-6 py-4 border-b border-gray-200 flex flex-col sm:flex-row items-start sm:items-center justify-between bg-gray-50 gap-2">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4">
               <h3 className="text-lg font-medium text-gray-900">Detailed Comparison Table</h3>
               <span className="text-sm text-gray-600">
                 Total: <span className="font-medium">{periodComparisons.length}</span> periods
               </span>
             </div>
-            <button
-              onClick={downloadComparisonCSV}
-              disabled={periodComparisons.length === 0}
-              className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 16v-4m0 0V8m0 4H8m4 0h4" />
-              </svg>
-              Download CSV
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={downloadComparisonCSV}
+                disabled={periodComparisons.length === 0}
+                className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 16v-4m0 0V8m0 4H8m4 0h4" />
+                </svg>
+                Download CSV
+              </button>
+            </div>
+          </div>
+
+          {/* Method Summaries (per payment method) */}
+          <div className="px-6 py-4 border-b border-gray-200 bg-white">
+            <h4 className="text-sm font-medium text-gray-700 mb-2">Methods in period</h4>
+            {loadingMethodSummaries ? (
+              // Skeleton table with 6 rows
+              <div className="overflow-x-auto bg-white rounded">
+                <table className="w-full table-fixed text-sm">
+                  <thead>
+                    <tr className="text-xs text-gray-500">
+                      <th className="w-1/3 text-left px-2 py-1">Method</th>
+                      <th className="w-1/6 text-right px-2 py-1">Net Sales</th>
+                      <th className="w-1/6 text-right px-2 py-1">Approved</th>
+                      <th className="w-1/6 text-right px-2 py-1">Pending</th>
+                      <th className="w-1/6 text-right px-2 py-1">Gap</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {Array.from({ length: 6 }).map((_, i) => (
+                      <tr key={i} className="border-t animate-pulse">
+                        <td className="px-2 py-2">
+                          <div className="h-4 bg-gray-200 rounded w-32"></div>
+                        </td>
+                        <td className="px-2 py-2 text-right">
+                          <div className="h-4 bg-gray-200 rounded w-20 ml-auto"></div>
+                        </td>
+                        <td className="px-2 py-2 text-right">
+                          <div className="h-4 bg-gray-200 rounded w-12 ml-auto"></div>
+                        </td>
+                        <td className="px-2 py-2 text-right">
+                          <div className="h-4 bg-gray-200 rounded w-12 ml-auto"></div>
+                        </td>
+                        <td className="px-2 py-2 text-right">
+                          <div className="h-4 bg-gray-200 rounded w-20 ml-auto"></div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : methodSummaries.length === 0 ? (
+              <div className="text-sm text-gray-500">No active methods in selected period</div>
+            ) : (
+              <div className="overflow-x-auto bg-white rounded">
+                <table className="w-full table-fixed text-sm">
+                  <thead>
+                    <tr className="text-xs text-gray-500">
+                      <th className="w-1/3 text-left px-2 py-1">Method</th>
+                      <th className="w-1/6 text-right px-2 py-1">Net Sales</th>
+                      <th className="w-1/6 text-right px-2 py-1">Approved</th>
+                      <th className="w-1/6 text-right px-2 py-1">Pending</th>
+                      <th className="w-1/6 text-right px-2 py-1">Gap</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {
+                      // Prepare filtered and paginated data for methods
+                      (() => {
+                        const filtered = methodSummaries.filter(m => appliedMethod === 'all' || m.payment_method_id === appliedMethod);
+                        const totalCount = filtered.length;
+                        const totalPages = Math.max(1, Math.ceil(totalCount / methodItemsPerPage));
+                        if (methodPage > totalPages) setMethodPage(1);
+
+                        const start = (methodPage - 1) * methodItemsPerPage;
+                        const end = start + methodItemsPerPage;
+                        const pageItems = filtered.slice(start, end);
+
+                        // compute totals across filtered set
+                        const totals = filtered.reduce((acc, cur) => {
+                          acc.net += Number(cur.netInvoices || 0);
+                          acc.approved += Number(cur.approvedAlloc || 0);
+                          acc.pending += Number(cur.pendingAmt || 0);
+                          acc.gap += Number(cur.gap || 0);
+                          return acc;
+                        }, { net: 0, approved: 0, pending: 0, gap: 0 });
+
+                        return (
+                          <>
+                            {pageItems.map(ms => (
+                              <tr key={ms.payment_method_id} className="border-t">
+                                <td className="px-2 py-2">{ms.name}</td>
+                                <td className="px-2 py-2 text-right">{formatCurrency(ms.netInvoices)}</td>
+                                <td className="px-2 py-2 text-right">{formatCurrency(ms.approvedAlloc)}</td>
+                                <td className="px-2 py-2 text-right">{formatCurrency(ms.pendingAmt)}</td>
+                                <td className="px-2 py-2 text-right">
+                                  {ms.gap === 0 ? (
+                                    <span className="text-green-600 font-semibold">✅ {formatCurrency(Math.abs(ms.gap))}</span>
+                                  ) : (
+                                    <span className="text-red-600 font-semibold">⚠️ {formatCurrency(Math.abs(ms.gap))}</span>
+                                  )}
+                                </td>
+                              </tr>
+                            ))}
+
+                            {/* Totals row */}
+                            <tr className="border-t bg-gray-50">
+                              <td className="px-2 py-2 font-bold">Total</td>
+                              <td className="px-2 py-2 text-right font-bold">{formatCurrency(totals.net)}</td>
+                              <td className="px-2 py-2 text-right font-bold">{formatCurrency(totals.approved)}</td>
+                              <td className="px-2 py-2 text-right font-bold">{formatCurrency(totals.pending)}</td>
+                              <td className="px-2 py-2 text-right font-bold">
+                                {totals.gap === 0 ? (
+                                  <span className="text-green-600">✅ {formatCurrency(Math.abs(totals.gap))}</span>
+                                ) : (
+                                  <span className="text-red-600">⚠️ {formatCurrency(Math.abs(totals.gap))}</span>
+                                )}
+                              </td>
+                            </tr>
+
+                            {/* Pagination controls */}
+                            <tr>
+                              <td colSpan={5} className="px-2 py-3">
+                                <div className="flex items-center justify-between">
+                                  <div className="text-sm text-gray-500">Showing {Math.min(start + 1, totalCount)} - {Math.min(end, totalCount)} of {totalCount}</div>
+                                  <div className="flex items-center gap-2">
+                                    <select value={methodItemsPerPage} onChange={(e) => { setMethodItemsPerPage(Number(e.target.value)); setMethodPage(1); }} className="border rounded px-2 py-1 text-sm">
+                                      <option value={5}>5</option>
+                                      <option value={10}>10</option>
+                                      <option value={25}>25</option>
+                                      <option value={50}>50</option>
+                                    </select>
+
+                                    <button onClick={() => setMethodPage(p => Math.max(1, p - 1))} disabled={methodPage <= 1} className="px-2 py-1 rounded border disabled:opacity-50">Prev</button>
+                                    <span className="text-sm">{methodPage} / {totalPages}</span>
+                                    <button onClick={() => setMethodPage(p => Math.min(totalPages, p + 1))} disabled={methodPage >= totalPages} className="px-2 py-1 rounded border disabled:opacity-50">Next</button>
+                                  </div>
+                                </div>
+                              </td>
+                            </tr>
+                          </>
+                        );
+                      })()
+                    }
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
           <div className="overflow-x-auto">
             <table className="min-w-full divide-y divide-gray-200">
