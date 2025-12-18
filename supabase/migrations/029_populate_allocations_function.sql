@@ -117,8 +117,16 @@ BEGIN
       ORDER BY ds.day
     LOOP
       v_day := v_day_record.day;
-      v_daily_sales := v_day_record.sales;
+      -- Clamp daily sales to non-negative to satisfy table constraint
+      -- but record negative original value for debugging/logging
       v_older_deposits_used := v_day_record.older_allocated;
+      IF v_day_record.sales < 0 THEN
+        -- Log negative daily sales occurrence (useful for later analysis)
+        INSERT INTO deposit_gap_logs(start_date, end_date, payment_method_id, exclude_deposit_id, source, gap_value)
+        VALUES (v_deposit.start_date, v_deposit.end_date, v_pmid, p_deposit_id, 'negative_daily_sales_clamped', v_day_record.sales);
+      END IF;
+
+      v_daily_sales := GREATEST(0, COALESCE(v_day_record.sales, 0));
 
       -- Calculate already allocated by previous methods of THIS deposit for this day
       v_allocated_by_prior_methods := COALESCE((SELECT SUM(allocated_amount) FROM deposit_allocations WHERE deposit_id = p_deposit_id AND allocation_date = v_day), 0);
