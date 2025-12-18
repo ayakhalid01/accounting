@@ -55,6 +55,10 @@ export default function DepositsPage() {
   type AllocationPreview = { gap_covered: number; gap_uncovered: number; remaining: number; per_method?: MethodPreview[] };
   const [allocationPreview, setAllocationPreview] = useState<Record<string, AllocationPreview | null>>({});
   const [allocationPreviewTimes, setAllocationPreviewTimes] = useState<Record<string, string>>({});
+  // Background allocation refresh state
+  const [allocationRefreshingIds, setAllocationRefreshingIds] = useState<Set<string>>(new Set());
+  const [allocationRefreshTimes, setAllocationRefreshTimes] = useState<Record<string, string>>({});
+  const MIN_REFRESH_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
   const [previewLoadingIds, setPreviewLoadingIds] = useState<Set<string>>(new Set());
   const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
   
@@ -783,6 +787,21 @@ export default function DepositsPage() {
         .eq('id', depositId);
 
       if (error) throw error;
+
+      // After approving, call populate_deposit_allocations to create detailed allocation rows
+      try {
+        console.log('🔄 Populating allocations for approved deposit', depositId);
+        const { error: popErr } = await supabase.rpc('populate_deposit_allocations', { p_deposit_id: depositId });
+        if (popErr) {
+          console.error('Failed to populate_deposit_allocations after approve:', popErr);
+          alert('Warning: allocations refresh failed after approve: ' + (popErr.message || JSON.stringify(popErr)));
+        } else {
+          console.log('✅ populate_deposit_allocations completed for', depositId);
+        }
+      } catch (rpcErr) {
+        console.error('Exception while calling populate_deposit_allocations:', rpcErr);
+      }
+
       await loadDeposits();
     } catch (err: any) {
       alert('Failed to approve: ' + err.message);
@@ -903,7 +922,45 @@ export default function DepositsPage() {
         });
 
         // record time of refresh
-        setAllocationPreviewTimes(prev => ({ ...prev, [deposit.id]: new Date().toISOString() }));
+        const nowIso = new Date().toISOString();
+        setAllocationPreviewTimes(prev => ({ ...prev, [deposit.id]: nowIso }));
+
+// Trigger background allocations refresh (non-blocking) - only for approved deposits
+        (async () => {
+          try {
+            if (deposit.status !== 'approved') {
+              console.log('Not triggering background allocations refresh - deposit not approved:', deposit.id);
+              return;
+            }
+
+            // Avoid frequent refreshes
+            const last = allocationRefreshTimes[deposit.id];
+            // If force is true, bypass the throttle and refresh immediately
+            if (!force && last && (new Date().getTime() - new Date(last).getTime()) < MIN_REFRESH_INTERVAL_MS) {
+              console.log('Skipping background allocation refresh for', deposit.id, '— refreshed recently (use force to bypass)');
+              return;
+            } else if (force && last) {
+              console.log('Force refresh requested — bypassing throttle for', deposit.id);
+            }
+
+            setAllocationRefreshingIds(prev => new Set([...Array.from(prev), deposit.id]));
+            console.log('🔄 Background: populating deposit allocations for', deposit.id);
+            const { error } = await supabase.rpc('populate_deposit_allocations', { p_deposit_id: deposit.id });
+            if (error) {
+              console.error('Background populate_deposit_allocations error for', deposit.id, error);
+            } else {
+              console.log('Background populate_deposit_allocations completed for', deposit.id);
+              setAllocationRefreshTimes(prev => ({ ...prev, [deposit.id]: new Date().toISOString() }));
+            }
+          } catch (err) {
+            console.error('Background allocation refresh failed for', deposit.id, err);
+          } finally {
+            setAllocationRefreshingIds(prev => {
+              const s = new Set(Array.from(prev).filter(x => x !== deposit.id));
+              return s;
+            });
+          }
+        })();
 
         console.log('🔢 Computed group preview for', deposit.id, preview);
         return;
@@ -953,7 +1010,34 @@ export default function DepositsPage() {
       });
 
       // record time of refresh
-      setAllocationPreviewTimes(prev => ({ ...prev, [deposit.id]: new Date().toISOString() }));
+      const nowIso = new Date().toISOString();
+      setAllocationPreviewTimes(prev => ({ ...prev, [deposit.id]: nowIso }));
+
+      // Background refresh allocations (non-blocking)
+      (async () => {
+        try {
+          const last = allocationRefreshTimes[deposit.id];
+          // If force is true bypass throttle
+          if (!force && last && (new Date().getTime() - new Date(last).getTime()) < MIN_REFRESH_INTERVAL_MS) {
+            console.log('Skipping background allocation refresh for', deposit.id, '— refreshed recently (use force to bypass)');
+          } else {
+            if (force && last) console.log('Force refresh requested — bypassing throttle for', deposit.id);
+            setAllocationRefreshingIds(prev => new Set([...Array.from(prev), deposit.id]));
+            console.log('🔄 Background: populating deposit allocations for', deposit.id);
+            const { error } = await supabase.rpc('populate_deposit_allocations', { p_deposit_id: deposit.id });
+            if (error) console.error('Background populate_deposit_allocations error for', deposit.id, error);
+            else setAllocationRefreshTimes(prev => ({ ...prev, [deposit.id]: new Date().toISOString() }));
+          }
+        } catch (err) {
+          console.error('Background allocation refresh failed for', deposit.id, err);
+        } finally {
+          setAllocationRefreshingIds(prev => {
+            const s = new Set(Array.from(prev).filter(x => x !== deposit.id));
+            return s;
+          });
+        }
+      })();
+
       console.log('✅ Preview cache updated for', deposit.id);
     } catch (err: any) {
       console.error('Preview allocation failed:', err);
@@ -1463,6 +1547,13 @@ export default function DepositsPage() {
                                     return `${pm.name || pm.payment_method_id} (Gap: ${gapStr} EGP خلال الفترة)`;
                                   }).join(' → ')}
                                   <span className="text-xs text-gray-500 ml-2">Rem: {typeof allocationPreview[deposit.id]!.remaining === 'number' ? allocationPreview[deposit.id]!.remaining.toLocaleString() + ' EGP' : 'N/A'}</span>
+
+                                  {/* Allocation refresh status */}
+                                  {allocationRefreshingIds.has(deposit.id) ? (
+                                    <span className="text-xs text-blue-600 ml-3">Refreshing allocations…</span>
+                                  ) : allocationRefreshTimes[deposit.id] ? (
+                                    <span className="text-xs text-gray-400 ml-3">Allocations updated {new Date(allocationRefreshTimes[deposit.id]).toLocaleString()}</span>
+                                  ) : null}
                                 </div>
                               ) : null}
                             </div>
@@ -1726,12 +1817,44 @@ export default function DepositsPage() {
                                         >
                                           Clear Allocations
                                         </button>
-                                        <button
-                                          onClick={async () => { await previewAllocation(deposit, true); alert('Preview refreshed'); }}
-                                          className="px-3 py-1 bg-blue-100 text-blue-700 rounded text-xs hover:bg-blue-200"
-                                        >
-                                          Refresh Preview
-                                        </button>
+                                        <div className="flex gap-2">
+                                          <button
+                                            onClick={async () => { await previewAllocation(deposit, true); alert('Preview refreshed'); }}
+                                            className="px-3 py-1 bg-blue-100 text-blue-700 rounded text-xs hover:bg-blue-200"
+                                          >
+                                            Refresh Preview
+                                          </button>
+
+                                          <button
+                                            onClick={async () => {
+                                              if (deposit.status !== 'approved') { alert('Allocations can only be populated for approved deposits'); return; }
+                                              if (!confirm('Run allocation population for this deposit now?')) return;
+                                              try {
+                                                setAllocationRefreshingIds(prev => new Set([...Array.from(prev), deposit.id]));
+                                                const { error } = await supabase.rpc('populate_deposit_allocations', { p_deposit_id: deposit.id });
+                                                if (error) {
+                                                  console.error('Manual populate error:', error);
+                                                  alert('Failed to refresh allocations: ' + (error.message || JSON.stringify(error)));
+                                                } else {
+                                                  setAllocationRefreshTimes(prev => ({ ...prev, [deposit.id]: new Date().toISOString() }));
+                                                  alert('Allocations refreshed successfully');
+                                                  await loadDeposits();
+                                                }
+                                              } catch (err: any) {
+                                                console.error('Manual populate exception:', err);
+                                                alert('Error refreshing allocations: ' + (err.message || String(err)));
+                                              } finally {
+                                                setAllocationRefreshingIds(prev => {
+                                                  const s = new Set(Array.from(prev).filter(x => x !== deposit.id));
+                                                  return s;
+                                                });
+                                              }
+                                            }}
+                                            className="px-3 py-1 bg-green-100 text-green-700 rounded text-xs hover:bg-green-200"
+                                          >
+                                            Refresh Allocations
+                                          </button>
+                                        </div>
                                       </div>
                                     )}
                                   </div>

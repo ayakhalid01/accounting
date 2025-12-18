@@ -96,10 +96,15 @@ LANGUAGE plpgsql
 SECURITY INVOKER
 AS $$
 BEGIN
-  -- Only calculate summary when status changes to approved (FAST)
+  -- When a deposit transitions to APPROVED, run the summary AND populate detailed allocations.
+  -- NOTE: populate_deposit_allocations is potentially expensive; calling it synchronously means the
+  -- approving transaction may take longer. This makes allocations immediately available but risks
+  -- higher latency during approval.
   IF NEW.status = 'approved' AND (OLD.status IS NULL OR OLD.status != 'approved') THEN
-    RAISE NOTICE 'Deposit % approved, calculating summary', NEW.id;
+    RAISE NOTICE 'Deposit % approved, calculating summary and populating allocations', NEW.id;
     PERFORM calculate_deposit_summary(NEW.id);
+    -- Populate detailed per-day allocations for this deposit
+    PERFORM populate_deposit_allocations(NEW.id);
   END IF;
 
   -- If deposit unapproved, delete allocations and reset
@@ -113,14 +118,15 @@ BEGIN
     NEW.remaining_amount := NEW.net_amount;
   END IF;
 
-  -- If key fields changed on approved deposit, recalculate summary
+  -- If key fields changed on an already approved deposit, recalculate summary AND repopulate allocations
   IF NEW.status = 'approved' AND OLD.status = 'approved' THEN
     IF NEW.start_date != OLD.start_date 
        OR NEW.end_date != OLD.end_date 
        OR NEW.net_amount != OLD.net_amount 
        OR NEW.payment_method_id IS DISTINCT FROM OLD.payment_method_id THEN
-      RAISE NOTICE 'Deposit % changed, recalculating summary', NEW.id;
+      RAISE NOTICE 'Deposit % changed, recalculating summary and repopulating allocations', NEW.id;
       PERFORM calculate_deposit_summary(NEW.id);
+      PERFORM populate_deposit_allocations(NEW.id);
     END IF;
   END IF;
 

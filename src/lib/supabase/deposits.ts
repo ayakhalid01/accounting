@@ -49,11 +49,42 @@ export async function loadDepositSettings(paymentMethodId: string): Promise<Depo
 /**
  * Save or update deposit settings for a payment method
  */
+let _depositSettingsColumnsChecked = false;
+const _missingDepositSettingsCols = new Set<string>();
+
+async function ensureDepositSettingsColumns() {
+  if (_depositSettingsColumnsChecked) return;
+  try {
+    // Try selecting canonical columns to determine which exist in this DB
+    const { error } = await supabase
+      .from('payment_method_deposit_settings')
+      .select('refund_column,amount_column,filter_column,tax_column', { head: true });
+    if (error) {
+      if (error.code === 'PGRST204' && typeof error.message === 'string') {
+        const colRegex = /Could not find the '([^']+)' column/g;
+        let m: RegExpExecArray | null;
+        while ((m = colRegex.exec(error.message)) !== null) {
+          _missingDepositSettingsCols.add(m[1]);
+        }
+      } else {
+        // Non-schema error; log and continue
+        console.warn('Could not detect deposit settings columns:', error);
+      }
+    }
+  } catch (err) {
+    console.warn('Exception while detecting deposit settings columns:', err);
+  } finally {
+    _depositSettingsColumnsChecked = true;
+  }
+}
+
 export async function saveDepositSettings(
   paymentMethodId: string,
   settings: Partial<DepositSettings>
 ): Promise<DepositSettings | null> {
   try {
+    // Ensure we know which columns exist in the DB to avoid PGRST204 errors
+    await ensureDepositSettingsColumns();
     // Validate tax_method if provided
     const VALID_TAX_METHODS = ['no_tax', 'percentage', 'fixed_amount', 'column', 'fixed_percent', 'column_based', 'none'];
     if (settings.tax_method && !VALID_TAX_METHODS.includes(settings.tax_method)) {
@@ -63,27 +94,53 @@ export async function saveDepositSettings(
     // Map app schema names to database schema names (remove _name suffix)
     const dbSettings: any = {};
     
-    // Copy payment_method_id
-    dbSettings.payment_method_id = settings.payment_method_id;
+    // Ensure caller provided a paymentMethodId
+    if (!paymentMethodId) {
+      throw new Error('paymentMethodId is required');
+    }
+
+    // Copy payment_method_id (use the function arg to avoid relying on caller-provided payload)
+    dbSettings.payment_method_id = paymentMethodId;
     
     // Map column names: _name → without _name
     // Also cleanup old naming to avoid confusion
     if (settings.tax_column_name !== undefined) {
-      dbSettings.tax_column = settings.tax_column_name;
-      dbSettings.tax_column_name = null; // Clear old naming
+      // Prefer canonical tax_column if available
+      if (!_missingDepositSettingsCols.has('tax_column')) {
+        dbSettings.tax_column = settings.tax_column_name;
+        dbSettings.tax_column_name = null; // Clear old naming
+      } else {
+        dbSettings.tax_column_name = settings.tax_column_name === '' ? null : settings.tax_column_name;
+      }
     }
+
     if (settings.amount_column_name !== undefined) {
-      dbSettings.amount_column = settings.amount_column_name === '' ? null : settings.amount_column_name;
-      dbSettings.amount_column_name = null; // Clear old naming
+      if (!_missingDepositSettingsCols.has('amount_column')) {
+        dbSettings.amount_column = settings.amount_column_name === '' ? null : settings.amount_column_name;
+        dbSettings.amount_column_name = null; // Clear old naming
+      } else {
+        dbSettings.amount_column_name = settings.amount_column_name === '' ? null : settings.amount_column_name;
+      }
     }
+
     if (settings.refund_column_name !== undefined) {
-      dbSettings.refund_column = settings.refund_column_name === '' ? null : settings.refund_column_name;
-      dbSettings.refund_column_name = null; // Clear old naming
+      if (!_missingDepositSettingsCols.has('refund_column')) {
+        dbSettings.refund_column = settings.refund_column_name === '' ? null : settings.refund_column_name;
+        dbSettings.refund_column_name = null; // Clear old naming
+      } else {
+        // Write directly to legacy column when canonical is missing
+        dbSettings.refund_column_name = settings.refund_column_name === '' ? null : settings.refund_column_name;
+      }
     }
+
     if (settings.filter_column_name !== undefined) {
       // Treat empty string as explicit clear (map to NULL)
-      dbSettings.filter_column = settings.filter_column_name === '' ? null : settings.filter_column_name;
-      dbSettings.filter_column_name = null; // Clear old naming
+      if (!_missingDepositSettingsCols.has('filter_column')) {
+        dbSettings.filter_column = settings.filter_column_name === '' ? null : settings.filter_column_name;
+        dbSettings.filter_column_name = null; // Clear old naming
+      } else {
+        dbSettings.filter_column_name = settings.filter_column_name === '' ? null : settings.filter_column_name;
+      }
     }
     
     // Map filter values
@@ -175,12 +232,23 @@ export async function saveDepositSettings(
 
         if (missingCols.length > 0) {
           console.log('ℹ️ Detected missing columns in DB schema, retrying without them:', missingCols);
-          // Remove the offending keys from dbSettings and retry the DB operation once
+          // Attempt a compatibility retry: if the canonical column (e.g., 'refund_column') is missing,
+          // try writing to the legacy '<col>_name' column if the caller provided that value.
           missingCols.forEach(col => {
-            // The payload may include either the canonical column (e.g., 'refund_column')
-            // or the legacy *_name variants we set to null – remove both just in case.
+            // Remove canonical if present
             delete dbSettings[col];
-            delete dbSettings[col + '_name'];
+
+            // If the user provided a legacy '<col>_name' in the original settings payload, preserve that
+            const legacyKey = `${col}_name`;
+            if ((settings as any)[legacyKey] !== undefined) {
+              // Prefer the explicit legacy value ('' means clear)
+              dbSettings[legacyKey] = (settings as any)[legacyKey] === '' ? null : (settings as any)[legacyKey];
+            } else if ((settings as any)[col] !== undefined) {
+              // If they provided canonical in payload, map it back into legacy field
+              dbSettings[legacyKey] = (settings as any)[col] === '' ? null : (settings as any)[col];
+            }
+
+            // Do NOT delete the legacy key here — we want to preserve it for older schemas
           });
 
           if (existing) {
