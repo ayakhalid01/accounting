@@ -415,7 +415,7 @@ export default function DepositUploadPage() {
                 <label className="block text-sm font-medium mb-2">Refund Column (Optional)</label>
                 <select
                   value={columns.refundColumn || ''}
-                  onChange={(e) => setColumns(prev => ({ ...prev, refundColumn: e.target.value || undefined }))}
+                  onChange={(e) => setColumns(prev => ({ ...prev, refundColumn: e.target.value }))}
                   className="w-full px-3 py-2 rounded-lg border border-gray-300 bg-white"
                 >
                   <option value="">-- None --</option>
@@ -505,13 +505,16 @@ export default function DepositUploadPage() {
             </div>
 
             <div className="flex gap-3">
-              <button
-                onClick={handleSaveDeposit}
-                className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium flex items-center gap-2"
-              >
-                <Check className="w-4 h-4" />
-                Save Deposit
-              </button>
+              <div>
+                <button
+                  onClick={handleSaveDeposit}
+                  className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium flex items-center gap-2"
+                >
+                  <Check className="w-4 h-4" />
+                  Save Deposit
+                </button>
+                <div className="text-xs text-gray-500 mt-2">Note: Saving a deposit will NOT persist settings or tax overrides. Click <strong>Save Settings</strong> to save column/filter/tax changes.</div>
+              </div>
               <button
                 onClick={() => setPhase('configured')}
                 className="px-6 py-2 bg-gray-300 text-gray-700 rounded-lg hover:bg-gray-400 transition-colors font-medium"

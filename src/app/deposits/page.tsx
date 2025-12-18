@@ -22,6 +22,7 @@ interface Deposit {
   remaining_amount?: number;
   payment_method_id: string;
   payment_method_name: string;
+  method_group?: Array<{payment_method_id: string; name_en?: string}>;
   status: 'pending' | 'approved' | 'rejected';
   notes: string;
   rejection_reason?: string;
@@ -49,6 +50,13 @@ export default function DepositsPage() {
   const [paymentMethods, setPaymentMethods] = useState<any[]>([]);
   const [expandedRow, setExpandedRow] = useState<string | null>(null);
   const [editingDeposit, setEditingDeposit] = useState<Deposit | null>(null);
+  // Allocation preview cache (deposit id -> preview)
+  type MethodPreview = { payment_method_id: string; name?: string; gap_available: number; gap_covered: number; gap_uncovered: number; remaining: number };
+  type AllocationPreview = { gap_covered: number; gap_uncovered: number; remaining: number; per_method?: MethodPreview[] };
+  const [allocationPreview, setAllocationPreview] = useState<Record<string, AllocationPreview | null>>({});
+  const [allocationPreviewTimes, setAllocationPreviewTimes] = useState<Record<string, string>>({});
+  const [previewLoadingIds, setPreviewLoadingIds] = useState<Set<string>>(new Set());
+  const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
   
   // ============================================
   // Load Saved Filters from localStorage
@@ -71,6 +79,13 @@ export default function DepositsPage() {
   const [files, setFiles] = useState<File[]>([]);
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
   const [submitting, setSubmitting] = useState(false);
+
+  // Tax Configuration from Settings
+  const [methodTaxSettings, setMethodTaxSettings] = useState<any>(null);
+  const [taxEnabled, setTaxEnabled] = useState(false);
+  const [taxMethod, setTaxMethod] = useState<string>('none');
+  const [taxValue, setTaxValue] = useState<number | undefined>(undefined);
+  const [taxColumnName, setTaxColumnName] = useState<string | undefined>(undefined);
   
   // Filters - Restored from localStorage
   const [filterStartDate, setFilterStartDate] = useState(savedFilters?.filterStartDate || '');
@@ -161,7 +176,8 @@ export default function DepositsPage() {
       const depositsWithFiles = (depositsData || []).map(d => ({
         ...d,
         user_email: userEmailMap.get(d.user_id) || 'Unknown User',
-        proof_files: d.proof_file_url ? JSON.parse(d.proof_file_url) : []
+        proof_files: d.proof_file_url ? JSON.parse(d.proof_file_url) : [],
+        method_group: d.method_group || []
       }));
       
       console.log('✅ Loaded', depositsWithFiles.length, 'deposits. Users:', [...userEmailMap.values()]);
@@ -175,6 +191,34 @@ export default function DepositsPage() {
   useEffect(() => {
     applyFilters();
   }, [deposits, filterStartDate, filterEndDate, filterStatus, filterPaymentMethod, filterUploadedBy]);
+
+  // Load preview cache from localStorage on mount
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('deposits_allocation_preview');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        setAllocationPreview(parsed);
+        console.log('🔁 Loaded allocation preview cache from localStorage', Object.keys(parsed).length);
+      }
+    } catch (e) {
+      console.warn('Could not load allocation preview from localStorage:', e);
+    }
+  }, []);
+
+  // Auto-preview pending deposits in the current filtered set so the previews "always exist" while pending
+  useEffect(() => {
+    if (!filteredDeposits || filteredDeposits.length === 0) return;
+    const pending = filteredDeposits.filter(d => d.status === 'pending');
+    if (pending.length === 0) return;
+    console.log('⚡ Auto-prefetching previews for', pending.length, 'pending deposits');
+    pending.forEach(d => {
+      if (!allocationPreview[d.id]) {
+        // fire and forget
+        previewAllocation(d).catch(err => console.warn('Auto-preview failed for', d.id, err));
+      }
+    });
+  }, [filteredDeposits]);
 
   const applyFilters = () => {
     let filtered = [...deposits];
@@ -224,6 +268,44 @@ export default function DepositsPage() {
     } catch (err: any) {
       console.error('Error loading payment methods:', err);
     }
+  };
+
+  // Load deposit settings for a specific payment method
+  const loadDepositSettings = async (methodId: string) => {
+    try {
+      const { data, error } = await supabase
+        .from('payment_method_deposit_settings')
+        .select('*')
+        .eq('payment_method_id', methodId)
+        .maybeSingle();
+
+      if (error && error.code !== 'PGRST116') throw error;
+      
+      if (data) {
+        console.log('✅ Loaded deposit settings for method:', methodId, data);
+        setMethodTaxSettings(data);
+        setTaxEnabled(data.tax_enabled || false);
+        setTaxMethod(data.tax_method || 'none');
+        setTaxValue(data.tax_value);
+        setTaxColumnName(data.tax_column_name);
+      } else {
+        console.log('ℹ️ No deposit settings found for method:', methodId);
+        setMethodTaxSettings(null);
+        setTaxEnabled(false);
+        setTaxMethod('none');
+        setTaxValue(undefined);
+        setTaxColumnName(undefined);
+      }
+    } catch (err: any) {
+      console.error('Error loading deposit settings:', err);
+      setMethodTaxSettings(null);
+    }
+  };
+
+  // Handle payment method selection
+  const handlePaymentMethodChange = async (methodId: string) => {
+    setPaymentMethodId(methodId);
+    await loadDepositSettings(methodId);
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -339,6 +421,11 @@ export default function DepositsPage() {
     setNotes('');
     setFiles([]);
     setUploadedFiles([]);
+    setMethodTaxSettings(null);
+    setTaxEnabled(false);
+    setTaxMethod('none');
+    setTaxValue(undefined);
+    setTaxColumnName(undefined);
   };
 
   const handleEdit = (deposit: Deposit) => {
@@ -350,6 +437,8 @@ export default function DepositsPage() {
     setPaymentMethodId(deposit.payment_method_id);
     setNotes(deposit.notes || '');
     setUploadedFiles((deposit.proof_files as any[]) || []);
+    // Load settings for the payment method
+    loadDepositSettings(deposit.payment_method_id);
     setShowForm(true);
   };
 
@@ -476,10 +565,15 @@ export default function DepositsPage() {
 
     // Prepare CSV headers
     const headers = [
+      'Deposit ID',
       'User Email',
       'Start Date',
       'End Date',
       'Payment Method',
+      'Grouped',
+      'Group Sequence',
+      'Group Size',
+      'Method Index',
       'Total Amount (EGP)',
       'Tax Amount (EGP)',
       'Net Amount (EGP)',
@@ -490,21 +584,40 @@ export default function DepositsPage() {
       'Created Date'
     ];
 
-    // Prepare CSV rows
-    const rows = filteredDeposits.map(deposit => [
-      deposit.user_email || 'Unknown',
-      new Date(deposit.start_date).toLocaleDateString(),
-      new Date(deposit.end_date).toLocaleDateString(),
-      deposit.payment_methods?.name_en || deposit.payment_method_name || 'N/A',
-      deposit.total_amount,
-      deposit.tax_amount,
-      deposit.net_amount,
-      deposit.gap_uncovered || '-',
-      deposit.remaining_amount || '-',
-      deposit.status,
-      (deposit.notes || '').replace(/"/g, '""'), // Escape quotes
-      new Date(deposit.created_at).toLocaleDateString()
-    ]);
+    // Prepare CSV rows - expand deposits by method_group (one row per method)
+    const rows: string[][] = [];
+    filteredDeposits.forEach(deposit => {
+      const isGrouped = Boolean(deposit.method_group && deposit.method_group.length > 0);
+      const methods = isGrouped
+        ? (deposit.method_group as Array<{ payment_method_id?: string; name_en?: string }>)
+        : [{ name_en: deposit.payment_methods?.name_en || deposit.payment_method_name || 'N/A' }];
+
+      methods.forEach((m, idx) => {
+        const groupSequence = methods.map(x => x.name_en || x.payment_method_id || 'N/A').join(' → ');
+        const groupSize = methods.length;
+        const methodIndex = idx + 1;
+
+        rows.push([
+          deposit.id || '',
+          deposit.user_email || 'Unknown',
+          new Date(deposit.start_date).toLocaleDateString(),
+          new Date(deposit.end_date).toLocaleDateString(),
+          m.name_en || 'N/A',
+          isGrouped ? 'Yes' : 'No',
+          groupSequence,
+          String(groupSize),
+          String(methodIndex),
+          (typeof deposit.total_amount === 'number' ? deposit.total_amount.toFixed(2) : deposit.total_amount || '0'),
+          (typeof deposit.tax_amount === 'number' ? deposit.tax_amount.toFixed(2) : deposit.tax_amount || '0'),
+          (typeof deposit.net_amount === 'number' ? deposit.net_amount.toFixed(2) : deposit.net_amount || '0'),
+          (typeof deposit.gap_uncovered === 'number' ? deposit.gap_uncovered.toFixed(2) : (deposit.gap_uncovered || '-')),
+          (typeof deposit.remaining_amount === 'number' ? deposit.remaining_amount.toFixed(2) : (deposit.remaining_amount || '-')),
+          deposit.status,
+          (deposit.notes || '').replace(/"/g, '""'), // Escape quotes
+          new Date(deposit.created_at).toLocaleDateString()
+        ]);
+      });
+    });
 
     // Create CSV content
     const csvContent = [
@@ -529,27 +642,131 @@ export default function DepositsPage() {
   const handleDelete = async (depositId: string) => {
     if (!confirm('Are you sure you want to delete this deposit?')) return;
 
+    setDeletingIds(prev => {
+      const next = new Set(prev);
+      next.add(depositId);
+      return next;
+    });
+
     try {
       console.log('🗑️ Deleting deposit:', depositId);
       
-      // RLS policy handles the permission check
-      const { error } = await supabase
+      // Delete and return deleted rows to know if RLS allowed it
+      const { data, error } = await supabase
         .from('deposits')
         .delete()
-        .eq('id', depositId);
+        .eq('id', depositId)
+        .select('id');
 
       if (error) {
         console.error('❌ Delete error:', error);
-        alert('Failed to delete: ' + error.message + '. Only pending deposits can be deleted.');
+        alert('Failed to delete: ' + error.message);
         return;
       }
-      
-      console.log('✅ Deposit deleted successfully');
-      alert('Deposit deleted successfully!');
+
+      const deletedCount = data ? data.length : 0;
+      console.log(`Requested 1 deletion, actually deleted ${deletedCount}`);
+
+      if (deletedCount === 1) {
+        alert('Deposit deleted successfully!');
+      } else {
+        alert('No deposits were deleted. You may not have permission to delete this record.');
+      }
+
       await loadDeposits();
     } catch (err: any) {
       console.error('❌ Delete failed:', err);
       alert('Failed to delete: ' + err.message);
+    } finally {
+      setDeletingIds(prev => {
+        const next = new Set(prev);
+        next.delete(depositId);
+        return next;
+      });
+    }
+  };
+
+  // Delete all deposits (admin only) - delete only currently filtered deposits for safety
+  const handleDeleteAll = async () => {
+    const ids = filteredDeposits.map(d => d.id);
+    if (ids.length === 0) {
+      alert('No deposits to delete');
+      return;
+    }
+
+    if (!confirm(`Are you sure you want to delete ${ids.length} deposit(s)? This cannot be undone.`)) return;
+
+    try {
+      // Delete by list of IDs and return deleted rows
+      const { data, error } = await supabase
+        .from('deposits')
+        .delete()
+        .in('id', ids)
+        .select('id');
+
+      if (error) {
+        alert('Failed to delete deposits: ' + error.message);
+        console.error('DeleteAll error:', error);
+        return;
+      }
+
+      const deletedCount = data ? data.length : 0;
+      console.log(`Requested ${ids.length} deletions, actually deleted ${deletedCount}`);
+
+      if (deletedCount === ids.length) {
+        alert(`${deletedCount} deposits deleted successfully!`);
+      } else if (deletedCount > 0) {
+        alert(`Deleted ${deletedCount} deposits. ${ids.length - deletedCount} could not be deleted (permissions or constraints).`);
+      } else {
+        alert('No deposits were deleted. You may not have permission to delete some records.');
+      }
+
+      await loadDeposits();
+    } catch (err: any) {
+      alert('Failed to delete deposits: ' + err.message);
+      console.error('DeleteAll catch:', err);
+    }
+  };
+
+  // Delete deposits by status (admin only) - pending or approved
+  const handleDeleteByStatus = async (status: 'pending' | 'approved') => {
+    const ids = deposits.filter(d => d.status === status).map(d => d.id);
+    if (ids.length === 0) {
+      alert(`No ${status} deposits to delete`);
+      return;
+    }
+
+    if (!confirm(`Are you sure you want to delete ${ids.length} ${status} deposit(s)? This cannot be undone.`)) return;
+
+    try {
+      // Delete by list of IDs and return deleted rows
+      const { data, error } = await supabase
+        .from('deposits')
+        .delete()
+        .in('id', ids)
+        .select('id');
+
+      if (error) {
+        alert('Failed to delete deposits: ' + error.message);
+        console.error(`DeleteByStatus (${status}) error:`, error);
+        return;
+      }
+
+      const deletedCount = data ? data.length : 0;
+      console.log(`Requested ${ids.length} deletions for status=${status}, actually deleted ${deletedCount}`);
+
+      if (deletedCount === ids.length) {
+        alert(`${deletedCount} ${status} deposits deleted successfully!`);
+      } else if (deletedCount > 0) {
+        alert(`Deleted ${deletedCount} ${status} deposits. ${ids.length - deletedCount} could not be deleted (permissions or constraints).`);
+      } else {
+        alert(`No ${status} deposits were deleted. You may not have permission to delete some records.`);
+      }
+
+      await loadDeposits();
+    } catch (err: any) {
+      alert('Failed to delete deposits: ' + err.message);
+      console.error(`DeleteByStatus (${status}) catch:`, err);
     }
   };
 
@@ -595,6 +812,161 @@ export default function DepositsPage() {
     }
   };
 
+  // Preview allocation for a deposit (does not change DB)
+  const previewAllocation = async (deposit: Deposit, force: boolean = false) => {
+    if (allocationPreview[deposit.id] && !force) {
+      console.log('🔁 Preview cache hit for deposit', deposit.id, allocationPreview[deposit.id]);
+      return; // already cached
+    }
+
+    setPreviewLoadingIds(prev => {
+      const next = new Set(prev);
+      next.add(deposit.id);
+      return next;
+    });
+
+    if (force) console.log('🔄 Forcing preview refresh for deposit', deposit.id);
+
+    try {
+      console.log('🔍 Previewing allocation for deposit', deposit.id, {
+        start_date: deposit.start_date,
+        end_date: deposit.end_date
+      });
+
+      // If deposit has an ordered method_group, compute allocations sequentially
+      const group = (deposit as any).method_group as Array<{payment_method_id: string; name_en?: string}> | undefined;
+
+      if (group && group.length > 0) {
+        console.log('🔀 deposit has method_group:', group.map(g => g.payment_method_id));
+        let remainingAmount = deposit.net_amount;
+        const per_method: MethodPreview[] = [];
+        let total_gap_covered = 0;
+
+        for (const m of group) {
+          if (remainingAmount <= 0) {
+            per_method.push({ payment_method_id: m.payment_method_id, name: m.name_en, gap_available: 0, gap_covered: 0, gap_uncovered: 0, remaining: 0 });
+            continue;
+          }
+
+          const { data, error } = await supabase.rpc('calculate_gap_in_period', {
+            p_start_date: deposit.start_date,
+            p_end_date: deposit.end_date,
+            p_payment_method_id: m.payment_method_id || null,
+            p_exclude_deposit_id: null, // include this deposit's allocations in the preview
+            p_use_latest: true
+          });
+
+          if (error) {
+            console.error('RPC error for method', m.payment_method_id, error);
+            throw error;
+          }
+
+          const v_gap = Number(data) || 0;
+
+          // this method can cover at most v_gap, but not more than remainingAmount
+          const gap_covered_for_method = Math.min(remainingAmount, v_gap);
+          remainingAmount = remainingAmount - gap_covered_for_method;
+
+          const gap_uncovered_for_method = Math.max(0, v_gap - gap_covered_for_method);
+
+          per_method.push({
+            payment_method_id: m.payment_method_id,
+            name: m.name_en,
+            gap_available: v_gap,
+            gap_covered: gap_covered_for_method,
+            gap_uncovered: gap_uncovered_for_method,
+            remaining: remainingAmount
+          });
+
+          total_gap_covered += gap_covered_for_method;
+        }
+
+        const total_remaining = Math.max(0, deposit.net_amount - total_gap_covered);
+        const total_gap_uncovered = per_method.reduce((acc, pm) => acc + pm.gap_uncovered, 0);
+
+        const preview: AllocationPreview = {
+          gap_covered: total_gap_covered,
+          gap_uncovered: total_gap_uncovered,
+          remaining: total_remaining,
+          per_method
+        };
+
+        setAllocationPreview(prev => {
+          const next = { ...prev, [deposit.id]: preview };
+          try {
+            localStorage.setItem('deposits_allocation_preview', JSON.stringify(next));
+            console.log('💾 Saved preview to localStorage for', deposit.id);
+          } catch (e) {
+            console.warn('Could not save preview to localStorage:', e);
+          }
+          return next;
+        });
+
+        // record time of refresh
+        setAllocationPreviewTimes(prev => ({ ...prev, [deposit.id]: new Date().toISOString() }));
+
+        console.log('🔢 Computed group preview for', deposit.id, preview);
+        return;
+      }
+
+      // Fallback: original single-method calculation
+      const { data, error } = await supabase.rpc('calculate_gap_in_period', {
+        p_start_date: deposit.start_date,
+        p_end_date: deposit.end_date,
+        p_payment_method_id: deposit.payment_method_id || null,
+        p_exclude_deposit_id: null, // include this deposit's allocations in the preview
+        p_use_latest: true
+      });
+      if (error) throw error;
+      console.log('📡 RPC calculate_gap_in_period result for', deposit.id, data);
+      const v_gap_in_period = Number(data) || 0;
+      let gap_covered = 0;
+      let remaining = 0;
+      if (deposit.net_amount <= v_gap_in_period) {
+        gap_covered = deposit.net_amount;
+        remaining = 0;
+      } else {
+        gap_covered = v_gap_in_period;
+        remaining = deposit.net_amount - v_gap_in_period;
+      }
+      const gap_uncovered = Math.max(0, v_gap_in_period - gap_covered);
+      console.log('🔢 Computed preview for', deposit.id, { gap_covered, gap_uncovered, remaining });
+      const per_method: MethodPreview[] = [{
+        payment_method_id: deposit.payment_method_id,
+        name: deposit.payment_method_name,
+        gap_available: v_gap_in_period,
+        gap_covered,
+        gap_uncovered,
+        remaining
+      }];
+
+      const previewObj: AllocationPreview = { gap_covered, gap_uncovered, remaining, per_method };
+      setAllocationPreview(prev => {
+        const next = { ...prev, [deposit.id]: previewObj };
+        try {
+          localStorage.setItem('deposits_allocation_preview', JSON.stringify(next));
+          console.log('💾 Saved preview to localStorage for', deposit.id);
+        } catch (e) {
+          console.warn('Could not save preview to localStorage:', e);
+        }
+        return next;
+      });
+
+      // record time of refresh
+      setAllocationPreviewTimes(prev => ({ ...prev, [deposit.id]: new Date().toISOString() }));
+      console.log('✅ Preview cache updated for', deposit.id);
+    } catch (err: any) {
+      console.error('Preview allocation failed:', err);
+      alert('Failed to preview allocation: ' + err.message);
+    } finally {
+      setPreviewLoadingIds(prev => {
+        const next = new Set(prev);
+        next.delete(deposit.id);
+        return next;
+      });
+    }
+  };
+
   if (loading) {
     return (
       <div>
@@ -613,7 +985,7 @@ export default function DepositsPage() {
     <div className="min-h-screen bg-gray-50">
       <Navigation />
       
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <main className="max-w-screen-xl mx-auto px-4 sm:px-6 lg:px-16 py-8">
         <div className="mb-8">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
@@ -811,7 +1183,7 @@ export default function DepositsPage() {
                   <label className="block text-sm font-medium text-gray-700 mb-1">Payment Method *</label>
                   <select
                     value={paymentMethodId}
-                    onChange={(e) => setPaymentMethodId(e.target.value)}
+                    onChange={(e) => handlePaymentMethodChange(e.target.value)}
                     required
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
                   >
@@ -831,6 +1203,67 @@ export default function DepositsPage() {
                   />
                 </div>
               </div>
+
+              {/* Tax Configuration Display from Settings */}
+              {paymentMethodId && (
+                <div className="mb-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                  <h3 className="text-sm font-semibold text-blue-900 mb-4">💰 Tax Configuration</h3>
+                  
+                  {methodTaxSettings ? (
+                    <>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm mb-3">
+                        <div>
+                          <span className="text-blue-700 font-medium">Status:</span>
+                          <span className={`ml-2 font-semibold ${methodTaxSettings.tax_enabled ? 'text-green-600' : 'text-gray-600'}`}>
+                            {methodTaxSettings.tax_enabled ? '✓ Enabled' : '✗ Disabled'}
+                          </span>
+                        </div>
+                        {methodTaxSettings.tax_enabled && (
+                          <>
+                            <div>
+                              <span className="text-blue-700 font-medium">Method:</span>
+                              <span className="ml-2 text-gray-700 font-medium">
+                                {(methodTaxSettings.tax_method === 'fixed_percent' || methodTaxSettings.tax_method === 'percentage') && '📊 Fixed Percentage'}
+                                {(methodTaxSettings.tax_method === 'fixed_amount' || methodTaxSettings.tax_method === 'amount') && '💵 Fixed Amount'}
+                                {methodTaxSettings.tax_method === 'column_based' && '📋 Column Based'}
+                              </span>
+                            </div>
+                            {(methodTaxSettings.tax_method === 'fixed_percent' || methodTaxSettings.tax_method === 'percentage' || methodTaxSettings.tax_method === 'fixed_amount' || methodTaxSettings.tax_method === 'amount') && (
+                              <div>
+                                <span className="text-blue-700 font-medium">Value:</span>
+                                <span className="ml-2 font-bold text-green-700 text-base">
+                                  {methodTaxSettings.tax_value}
+                                  {(methodTaxSettings.tax_method === 'fixed_percent' || methodTaxSettings.tax_method === 'percentage') && '%'}
+                                  {(methodTaxSettings.tax_method === 'fixed_amount' || methodTaxSettings.tax_method === 'amount') && ' EGP'}
+                                </span>
+                              </div>
+                            )}
+                            {methodTaxSettings.tax_method === 'column_based' && (
+                              <div>
+                                <span className="text-blue-700 font-medium">Column Name:</span>
+                                <span className="ml-2 font-bold text-green-700 text-base">{methodTaxSettings.tax_column_name}</span>
+                              </div>
+                            )}
+                          </>
+                        )}
+                      </div>
+                      <p className="text-xs text-blue-600 mt-2">
+                        ✅ Tax will be auto-calculated based on configuration
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <p className="text-sm text-blue-700 mb-3">
+                        ⚠️ No tax configuration found for this payment method
+                      </p>
+                      <p className="text-xs text-blue-600">
+                        Set up tax configuration in the <span className="font-semibold">Settings</span> tab to enable auto-fill
+                      </p>
+                    </>
+                  )}
+                </div>
+              )}
+              
               <div className="mb-4">
                 <label className="block text-sm font-medium text-gray-700 mb-1">Notes</label>
                 <textarea
@@ -909,6 +1342,41 @@ export default function DepositsPage() {
               <span className="text-sm text-gray-600">
                 Total: <span className="font-medium">{filteredDeposits.length}</span> deposits
               </span>
+              {isAdmin && (
+                <div className="flex items-center gap-2">
+                  {filteredDeposits.length > 0 && (
+                    <button
+                      onClick={handleDeleteAll}
+                      className="flex items-center gap-2 px-3 py-1 bg-red-600 text-white rounded-lg hover:bg-red-700 text-xs"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                      Delete All
+                    </button>
+                  )}
+
+                  {/* Delete all pending */}
+                  {deposits.some(d => d.status === 'pending') && (
+                    <button
+                      onClick={() => handleDeleteByStatus('pending')}
+                      className="flex items-center gap-2 px-3 py-1 bg-orange-600 text-white rounded-lg hover:bg-orange-700 text-xs"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                      Delete Pending
+                    </button>
+                  )}
+
+                  {/* Delete all approved */}
+                  {deposits.some(d => d.status === 'approved') && (
+                    <button
+                      onClick={() => handleDeleteByStatus('approved')}
+                      className="flex items-center gap-2 px-3 py-1 bg-yellow-600 text-white rounded-lg hover:bg-yellow-700 text-xs"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                      Delete Approved
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
             <button
               onClick={downloadCSV}
@@ -919,7 +1387,6 @@ export default function DepositsPage() {
               Download CSV
             </button>
           </div>
-
           <div className="overflow-x-auto">
             <table className="min-w-full divide-y divide-gray-200">
               <thead className="bg-gray-50">
@@ -985,7 +1452,21 @@ export default function DepositsPage() {
                           </div>
                         </td>
                         <td className="px-6 py-4 text-sm text-gray-900">
-                          {deposit.payment_methods?.name_en || deposit.payment_method_name || 'N/A'}
+                          <div>{deposit.payment_methods?.name_en || deposit.payment_method_name || 'N/A'}</div>
+                          {deposit.method_group && deposit.method_group.length > 0 && (
+                            <div className="text-xs text-gray-500 mt-1">
+                              <span className="font-medium">Group:</span>&nbsp;{deposit.method_group.map((m: any) => m.name_en || m.payment_method_id).join(' → ')}
+                              {allocationPreview[deposit.id]?.per_method ? (
+                                <div className="mt-1 text-xs text-gray-700">
+                                  <span className="font-medium">Preview:</span>&nbsp;{allocationPreview[deposit.id]!.per_method!.map(pm => {
+                                    const gapStr = (typeof pm.gap_available === 'number') ? pm.gap_available.toLocaleString() : 'N/A';
+                                    return `${pm.name || pm.payment_method_id} (Gap: ${gapStr} EGP خلال الفترة)`;
+                                  }).join(' → ')}
+                                  <span className="text-xs text-gray-500 ml-2">Rem: {typeof allocationPreview[deposit.id]!.remaining === 'number' ? allocationPreview[deposit.id]!.remaining.toLocaleString() + ' EGP' : 'N/A'}</span>
+                                </div>
+                              ) : null}
+                            </div>
+                          )}
                         </td>
                         <td className="px-6 py-4 text-sm text-right text-gray-900">
                           {deposit.total_amount.toLocaleString()} EGP
@@ -997,23 +1478,49 @@ export default function DepositsPage() {
                           {deposit.net_amount.toLocaleString()} EGP
                         </td>
                         <td className="px-6 py-4 text-sm text-right text-red-600 font-medium">
-                          {deposit.status === 'approved' && deposit.gap_uncovered !== undefined ? 
-                            `${deposit.gap_uncovered.toLocaleString()} EGP` : 
-                            <span className="text-gray-400">-</span>
-                          }
+                          {allocationPreview[deposit.id] && deposit.status !== 'approved' ? (
+                            typeof allocationPreview[deposit.id]!.gap_uncovered === 'number' ? (
+                              `${allocationPreview[deposit.id]!.gap_uncovered.toLocaleString()} EGP (preview)`
+                            ) : (
+                              <span className="text-gray-400">N/A (preview)</span>
+                            )
+                          ) : (typeof deposit.gap_uncovered === 'number' ? (
+                            `${deposit.gap_uncovered.toLocaleString()} EGP`
+                          ) : (
+                            <span className="text-gray-400">N/A</span>
+                          ))}
                         </td>
                         <td className="px-6 py-4 text-sm text-right text-orange-600 font-medium">
-                          {deposit.status === 'approved' && deposit.remaining_amount !== undefined ? 
-                            `${deposit.remaining_amount.toLocaleString()} EGP` : 
-                            <span className="text-gray-400">-</span>
-                          }
+                          {allocationPreview[deposit.id] && deposit.status !== 'approved' ? (
+                            typeof allocationPreview[deposit.id]!.remaining === 'number' ? (
+                              `${allocationPreview[deposit.id]!.remaining.toLocaleString()} EGP (preview)`
+                            ) : (
+                              <span className="text-gray-400">N/A (preview)</span>
+                            )
+                          ) : (typeof deposit.remaining_amount === 'number' ? (
+                            `${deposit.remaining_amount.toLocaleString()} EGP`
+                          ) : (
+                            <span className="text-gray-400">N/A</span>
+                          ))}
                         </td>
                         <td className="px-6 py-4 text-sm">
                           {deposit.proof_files && deposit.proof_files.length > 0 ? (
-                            <span className="text-primary-600 flex items-center gap-1">
-                              <File className="h-4 w-4" />
-                              {deposit.proof_files.length} file(s)
-                            </span>
+                            <div className="flex flex-col gap-1">
+                              {deposit.proof_files.map((file: any, idx: number) => (
+                                <a
+                                  key={idx}
+                                  href={file.url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-primary-600 hover:underline flex items-center gap-1"
+                                  download={file.name}
+                                >
+                                  <File className="h-4 w-4" />
+                                  <span className="truncate max-w-[90px]">{file.name}</span>
+                                  <span className="text-xs text-gray-500">({(file.size/1024).toFixed(1)} KB)</span>
+                                </a>
+                              ))}
+                            </div>
                           ) : (
                             <span className="text-gray-400">No files</span>
                           )}
@@ -1051,6 +1558,35 @@ export default function DepositsPage() {
                                 </button>
                               </>
                             )}
+                                            {deposit.status !== 'approved' && (
+                          <div className="flex flex-col items-end">
+                            <button
+                              onClick={() => previewAllocation(deposit, true)}
+                              className="px-3 py-1 bg-blue-100 text-blue-700 rounded hover:bg-blue-200 text-xs"
+                              disabled={previewLoadingIds.has(deposit.id)}
+                              title="Preview allocation including this deposit (simulate approval)"
+                            >
+                              {previewLoadingIds.has(deposit.id) ? 'Previewing...' : 'Preview (refresh)'}
+                            </button>
+                            {allocationPreviewTimes[deposit.id] && (
+                              <div className="text-xs text-gray-500 mt-1">Last refreshed: {new Date(allocationPreviewTimes[deposit.id]).toLocaleString()}</div>
+                            )}
+                          </div>
+                        )}
+
+                            {/* Admins: per-row Delete button for any status */}
+                            {isAdmin && (
+                              <button
+                                onClick={() => handleDelete(deposit.id)}
+                                className="px-3 py-1 bg-red-600 text-white rounded hover:bg-red-700 text-xs flex items-center gap-1"
+                                disabled={deletingIds.has(deposit.id)}
+                                title="Delete this deposit"
+                              >
+                                <Trash2 className="h-3 w-3" />
+                                {deletingIds.has(deposit.id) ? 'Deleting...' : 'Delete'}
+                              </button>
+                            )}
+
                             {!isAdmin && deposit.status === 'pending' && deposit.user_id === currentUserId && (
                               <>
                                 <button
@@ -1063,9 +1599,10 @@ export default function DepositsPage() {
                                 <button
                                   onClick={() => handleDelete(deposit.id)}
                                   className="px-3 py-1 bg-red-600 text-white rounded hover:bg-red-700 text-xs flex items-center gap-1"
+                                  disabled={deletingIds.has(deposit.id)}
                                 >
                                   <Trash2 className="h-3 w-3" />
-                                  Delete
+                                  {deletingIds.has(deposit.id) ? 'Deleting...' : 'Delete'}
                                 </button>
                               </>
                             )}
@@ -1154,6 +1691,65 @@ export default function DepositsPage() {
                                         </div>
                                       );
                                     })}
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Per-method allocation preview (if present) */}
+                              {allocationPreview[deposit.id]?.per_method && (
+                                <div className="mt-4 p-3 bg-gray-50 rounded">
+                                  <div className="flex items-center justify-between mb-2">
+                                    <h4 className="font-medium text-gray-900">Allocation by Method (preview)</h4>
+                                    {isAdmin && (
+                                      <div className="flex items-center gap-2">
+                                        <button
+                                          onClick={async () => {
+                                            if (!confirm('Clear deposit_allocations for this deposit\'s period and method? This will delete allocation rows for this period and method.')) return;
+                                            try {
+                                              console.log('🧹 Clearing deposit_allocations for', deposit.id, deposit.start_date, deposit.end_date, deposit.payment_method_id);
+                                              const { data, error } = await supabase.rpc('clear_deposit_allocations', {
+                                                p_start_date: deposit.start_date,
+                                                p_end_date: deposit.end_date,
+                                                p_payment_method_id: deposit.payment_method_id || null
+                                              });
+                                              if (error) throw error;
+                                              console.log('🧹 clear_deposit_allocations result:', data);
+                                              alert(`Deleted ${data} allocation row(s) for this period/method.`);
+                                              // Re-run preview to refresh values (force bypass cache)
+                                              await previewAllocation(deposit, true);
+                                            } catch (err: any) {
+                                              console.error('Failed to clear allocations:', err);
+                                              alert('Failed to clear allocations: ' + err.message);
+                                            }
+                                          }}
+                                          className="px-3 py-1 bg-red-100 text-red-700 rounded text-xs hover:bg-red-200"
+                                        >
+                                          Clear Allocations
+                                        </button>
+                                        <button
+                                          onClick={async () => { await previewAllocation(deposit, true); alert('Preview refreshed'); }}
+                                          className="px-3 py-1 bg-blue-100 text-blue-700 rounded text-xs hover:bg-blue-200"
+                                        >
+                                          Refresh Preview
+                                        </button>
+                                      </div>
+                                    )}
+                                  </div>
+
+                                  <div className="grid grid-cols-1 gap-2 text-sm">
+                                    {allocationPreview[deposit.id]!.per_method!.map((pm) => (
+                                      <div key={pm.payment_method_id} className="flex justify-between items-center">
+                                        <div className="text-gray-700">
+                                          <span className="font-medium">{pm.name || pm.payment_method_id}</span>
+                                          <span className="text-xs text-gray-500 ml-2">(Remaining after this: {pm.remaining?.toLocaleString ? pm.remaining.toLocaleString() : 'N/A'} EGP)</span>
+                                        </div>
+                                        <div className="text-right">
+                                          <div className="text-sm text-blue-600">Gap (خلال الفترة): {typeof pm.gap_available === 'number' ? pm.gap_available.toLocaleString() : 'N/A'} EGP</div>
+                                          <div className="text-sm text-red-600">Gap Uncovered: {typeof pm.gap_uncovered === 'number' ? pm.gap_uncovered.toLocaleString() : 'N/A'} EGP</div>
+                                          <div className="text-sm text-orange-600">Gap Covered: {typeof pm.gap_covered === 'number' ? pm.gap_covered.toLocaleString() : 'N/A'} EGP</div>
+                                        </div>
+                                      </div>
+                                    ))}
                                   </div>
                                 </div>
                               )}

@@ -19,14 +19,15 @@ SECURITY INVOKER
 AS $$
 DECLARE
   v_deposit RECORD;
-  v_total_sales NUMERIC := 0;
-  v_older_deposits_covered NUMERIC := 0;
-  v_remaining_gap NUMERIC := 0;
+  v_remaining NUMERIC := 0;
   v_total_allocated NUMERIC := 0;
-  v_uncovered_gap NUMERIC := 0;
+  v_total_gap_avail NUMERIC := 0;
+  v_method RECORD;
+  v_pmid uuid;
+  v_gap numeric;
 BEGIN
-  -- Get deposit details including created_at for FIFO
-  SELECT id, start_date, end_date, net_amount, payment_method_id, status, created_at
+  -- Get deposit details including method_group
+  SELECT id, start_date, end_date, net_amount, payment_method_id, method_group, status, created_at
   INTO v_deposit
   FROM deposits
   WHERE id = p_deposit_id;
@@ -35,54 +36,53 @@ BEGIN
     RETURN;
   END IF;
 
-  -- Calculate total sales in period (fast aggregation)
-  SELECT 
-    COALESCE(SUM(i.amount_total), 0) - COALESCE(SUM(c.amount_total), 0)
-  INTO v_total_sales
-  FROM (
-    SELECT COALESCE(SUM(amount_total), 0) as amount_total
-    FROM invoices
-    WHERE state = 'posted'
-      AND sale_order_date::DATE BETWEEN v_deposit.start_date AND v_deposit.end_date
-      AND payment_method_id = v_deposit.payment_method_id
-  ) i,
-  (
-    SELECT COALESCE(SUM(ABS(amount_total)), 0) as amount_total
-    FROM credit_notes
-    WHERE state = 'posted'
-      AND original_invoice_id IS NOT NULL
-      AND sale_order_date::DATE BETWEEN v_deposit.start_date AND v_deposit.end_date
-      AND payment_method_id = v_deposit.payment_method_id
-  ) c;
+  v_remaining := v_deposit.net_amount;
 
-  -- Calculate how much OLDER deposits already covered (FIFO)
-  SELECT COALESCE(SUM(d.gap_covered), 0)
-  INTO v_older_deposits_covered
-  FROM deposits d
-  WHERE d.status = 'approved'
-    AND d.id != p_deposit_id
-    AND d.payment_method_id = v_deposit.payment_method_id
-    -- Older deposits (FIFO): started earlier OR started same day but created earlier
-    AND (d.start_date < v_deposit.start_date OR (d.start_date = v_deposit.start_date AND d.created_at < v_deposit.created_at))
-    -- Overlapping period
-    AND d.start_date <= v_deposit.end_date
-    AND d.end_date >= v_deposit.start_date;
+  -- Iterate methods in order from method_group if present, otherwise use payment_method_id
+  FOR v_method IN
+    SELECT elem
+    FROM jsonb_array_elements(
+    COALESCE(NULLIF(v_deposit.method_group::jsonb, '[]'::jsonb), jsonb_build_array(jsonb_build_object('payment_method_id', v_deposit.payment_method_id::text)))
+  ) AS t(elem)
+  LOOP
+    -- read payment_method_id (may be text in JSON)
+    v_pmid := NULL;
+    BEGIN
+      v_pmid := (v_method.elem ->> 'payment_method_id')::uuid;
+    EXCEPTION WHEN others THEN
+      v_pmid := NULL;
+    END;
 
-  -- Calculate remaining gap after older deposits
-  v_remaining_gap := GREATEST(0, v_total_sales - v_older_deposits_covered);
-  
-  -- This deposit covers as much of the remaining gap as possible
-  v_total_allocated := LEAST(v_deposit.net_amount, v_remaining_gap);
-  
-  -- Calculate uncovered gap AFTER this deposit
-  v_uncovered_gap := GREATEST(0, v_remaining_gap - v_total_allocated);
+    -- Compute gap available for this method (exclude current deposit id to avoid double-counting)
+    v_gap := calculate_gap_in_period(v_deposit.start_date, v_deposit.end_date, v_pmid, p_deposit_id, TRUE);
+    v_gap := GREATEST(0, COALESCE(v_gap, 0));
 
-  -- Update deposit summary (FAST - no detailed allocation)
+    -- sum total available
+    v_total_gap_avail := v_total_gap_avail + v_gap;
+
+    -- allocate as much as we can from remaining, but skip methods with zero gap
+    IF v_remaining > 0 AND v_gap > 0 THEN
+      IF v_remaining <= v_gap THEN
+        v_total_allocated := v_total_allocated + v_remaining;
+        v_remaining := 0;
+      ELSE
+        v_total_allocated := v_total_allocated + v_gap;
+        v_remaining := v_remaining - v_gap;
+      END IF;
+    END IF;
+
+    -- log step for debugging
+    INSERT INTO deposit_gap_logs(start_date, end_date, payment_method_id, exclude_deposit_id, source, gap_value)
+    VALUES (v_deposit.start_date, v_deposit.end_date, v_pmid, p_deposit_id, 'summary_allocation_step', v_gap);
+
+  END LOOP;
+
+  -- Update deposit summary columns
   UPDATE deposits
   SET 
     gap_covered = v_total_allocated,
-    gap_uncovered = v_uncovered_gap,
-    remaining_amount = v_deposit.net_amount - v_total_allocated
+    gap_uncovered = GREATEST(0, v_total_gap_avail - v_total_allocated),
+    remaining_amount = GREATEST(0, v_remaining)
   WHERE id = p_deposit_id;
 END;
 $$;
@@ -160,5 +160,4 @@ $$;
 
 -- 6. Add comment explaining the approach
 COMMENT ON FUNCTION calculate_deposit_summary(UUID) IS 
-'Fast summary calculation for deposit approval. Only calculates gap_covered, gap_uncovered, remaining_amount. 
-Detailed day-by-day allocations are populated on-demand by calling populate_deposit_allocations() or recalculate_all_deposit_allocations().';
+'Fast summary calculation for deposit approval. Allocates across ordered method_group sequentially: for each method compute available gap (using calculate_gap_in_period) and consume deposit amount in order, skipping methods with zero gap. Updates gap_covered, gap_uncovered, remaining_amount.';

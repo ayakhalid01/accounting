@@ -133,7 +133,7 @@ export default function UploadsPage() {
     console.log(`🗑️ Starting batch deletion of ${label}...`);
     
     const BATCH_SIZE = 500; // Size for fetching IDs
-    const DELETE_SIZE = 100; // Smaller size for actual deletion to reduce URL size
+    const DELETE_SIZE = 1000; // Larger micro-batch for actual deletion (increased from 100 to 1000)
     let totalDeleted = 0;
     let batchCount = 0;
     

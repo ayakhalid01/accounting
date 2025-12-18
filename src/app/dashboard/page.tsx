@@ -10,7 +10,8 @@ import {
   DollarSign, 
   CheckCircle,
   Clock,
-  AlertTriangle
+  AlertTriangle,
+  Wallet
 } from 'lucide-react';
 
 interface DashboardStats {
@@ -18,7 +19,11 @@ interface DashboardStats {
   approvedDepositsAmount: number;
   pendingDepositsAmount: number;
   approvedDepositsCount: number;
+  approvedDepositsGroupCount: number; // unique groups (by payment method)
+  approvedDepositsGroupAmount: number; // grouped sum by method
   pendingDepositsCount: number;
+  actualDepositsAmount: number;
+  actualDepositsCount: number;
   gapAmount: number;
   gapAfterPending: number;
 }
@@ -56,7 +61,11 @@ export default function DashboardPage() {
     approvedDepositsAmount: 0,
     pendingDepositsAmount: 0,
     approvedDepositsCount: 0,
+    approvedDepositsGroupCount: 0,
+    approvedDepositsGroupAmount: 0,
     pendingDepositsCount: 0,
+    actualDepositsAmount: 0,
+    actualDepositsCount: 0,
     gapAmount: 0,
     gapAfterPending: 0,
   });
@@ -143,7 +152,11 @@ export default function DashboardPage() {
       approvedDepositsAmount: 0,
       pendingDepositsAmount: 0,
       approvedDepositsCount: 0,
+      approvedDepositsGroupCount: 0,
+      approvedDepositsGroupAmount: 0,
       pendingDepositsCount: 0,
+      actualDepositsAmount: 0,
+      actualDepositsCount: 0,
       gapAmount: 0,
       gapAfterPending: 0,
     });
@@ -221,6 +234,18 @@ export default function DashboardPage() {
       localStorage.setItem('dashboard_filters', JSON.stringify(filtersToSave));
     }
   }, [periodType, startDate, endDate, selectedMethod]);
+
+  // ============================================
+  // 🔍 LOGGING: Track stats changes
+  // ============================================
+  useEffect(() => {
+    console.log('💜 [STATS CHANGED] Actual Deposits Card Updated:', {
+      amount: stats.actualDepositsAmount,
+      count: stats.actualDepositsCount,
+      formatted: `EGP ${stats.actualDepositsAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+      allStats: stats
+    });
+  }, [stats.actualDepositsAmount, stats.actualDepositsCount]);
 
   useEffect(() => {
     const checkAuthAndLoadData = async () => {
@@ -323,28 +348,39 @@ export default function DashboardPage() {
 
       let depositsQuery = supabase
         .from('deposits')
-        .select('net_amount, status, start_date, end_date, payment_method_id')
+        .select('net_amount, total_amount, status, start_date, end_date, payment_method_id')
         .or(`and(start_date.lte.${filterEndDate},end_date.gte.${filterStartDate})`);
+
+      // Query for deposit allocations (actual distributed amounts)
+      let allocationsQuery = supabase
+        .from('deposit_allocations')
+        .select('allocated_amount, allocation_date, payment_method_id')
+        .gte('allocation_date', filterStartDate)
+        .lte('allocation_date', filterEndDate);
 
       // Filter by payment method if selected
       if (filterMethod !== 'all') {
         invoicesQuery = invoicesQuery.eq('payment_method_id', filterMethod);
         creditsQuery = creditsQuery.eq('payment_method_id', filterMethod);
         depositsQuery = depositsQuery.eq('payment_method_id', filterMethod);
+        allocationsQuery = allocationsQuery.eq('payment_method_id', filterMethod);
       }
 
-      const [{ data: invoices, error: invError }, { data: credits, error: crError }, { data: deposits }] = await Promise.all([
+      const [{ data: invoices, error: invError }, { data: credits, error: crError }, { data: deposits }, { data: allocations, error: allocError }] = await Promise.all([
         invoicesQuery,
         creditsQuery,
-        depositsQuery
+        depositsQuery,
+        allocationsQuery
       ]);
 
       if (invError) console.error('❌ Invoices error:', invError);
       if (crError) console.error('❌ Credits error:', crError);
+      if (allocError) console.error('❌ Allocations error:', allocError);
 
       console.log('📊 [Frontend] Loaded invoices for charts:', invoices?.length || 0);
       console.log('📊 [Frontend] Loaded credits for charts:', credits?.length || 0);
       console.log('📊 [Frontend] Loaded deposits for charts:', deposits?.length || 0);
+      console.log('📊 [Frontend] Loaded allocations for charts:', allocations?.length || 0);
 
       // Use DATABASE totals for stats (accurate)
       const totalInvoices = aggregations?.[0]?.total_invoices_amount || 0;
@@ -361,17 +397,55 @@ export default function DashboardPage() {
       const approvedDepositsAmount = approvedDeposits.reduce((sum, d) => sum + d.net_amount, 0);
       const pendingDepositsAmount = pendingDeposits.reduce((sum, d) => sum + d.net_amount, 0);
       
-      const gapAmount = netSales - approvedDepositsAmount;
-      const gapAfterPending = netSales - approvedDepositsAmount - pendingDepositsAmount;
+      // Compute grouped stats from deposit_allocations (allocated_amount grouped by payment_method_id)
+      const groupMap: Record<string, number> = {};
+      (allocations || []).forEach(a => {
+        const pm = a.payment_method_id || 'unknown';
+        let amt = 0;
+        if (a && a.allocated_amount != null) {
+          const n = Number(a.allocated_amount);
+          amt = Number.isFinite(n) ? n : 0;
+        }
+        groupMap[pm] = (groupMap[pm] || 0) + amt;
+      });
+      const approvedDepositsGroupCount = Object.keys(groupMap).length;
+      const approvedDepositsGroupAmount = Object.values(groupMap).reduce((s, n) => s + n, 0);
+
+      // Actual deposits = sum of allocated_amount from deposit allocations table
+      const actualDepositsAmount = allocations?.reduce((sum, a) => sum + a.allocated_amount, 0) || 0;
+      const actualDepositsCount = allocations?.length || 0;
+      
+      // 🔍 LOGGING: Track actual deposits calculation
+      console.log('💜 [ACTUAL DEPOSITS - FROM FILTERS] Allocations Raw Data:', allocations);
+      console.log('💜 [ACTUAL DEPOSITS - FROM FILTERS] Calculation Details:', {
+        totalRecords: allocations?.length || 0,
+        totalAllocatedAmount: actualDepositsAmount,
+        dateRange: { start: filterStartDate, end: filterEndDate },
+        paymentMethod: filterMethod,
+        formatted: `EGP ${actualDepositsAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+      });
+      
+      const gapAmount = netSales - actualDepositsAmount;
+      const gapAfterPending = netSales - actualDepositsAmount - pendingDepositsAmount;
 
       setStats({
         totalSales: netSales,  // Use database total
         approvedDepositsAmount,
         pendingDepositsAmount,
         approvedDepositsCount: approvedDeposits.length,
+        approvedDepositsGroupCount,
+        approvedDepositsGroupAmount,
         pendingDepositsCount: pendingDeposits.length,
+        actualDepositsAmount,
+        actualDepositsCount,
         gapAmount,
         gapAfterPending,
+      });
+      
+      // 🔍 LOGGING: Confirm stats updated
+      console.log('✅ [ACTUAL DEPOSITS] Stats Updated:', {
+        actualDepositsAmount,
+        actualDepositsCount
       });
 
       // ============================================
@@ -516,28 +590,39 @@ export default function DashboardPage() {
 
       let depositsQuery = supabase
         .from('deposits')
-        .select('net_amount, status, start_date, end_date, payment_method_id')
+        .select('net_amount, total_amount, status, start_date, end_date, payment_method_id')
         .or(`and(start_date.lte.${appliedEndDate},end_date.gte.${appliedStartDate})`);
+
+      // Query for deposit allocations (actual distributed amounts)
+      let allocationsQuery = supabase
+        .from('deposit_allocations')
+        .select('allocated_amount, allocation_date, payment_method_id')
+        .gte('allocation_date', appliedStartDate)
+        .lte('allocation_date', appliedEndDate);
 
       // Filter by payment method if selected
       if (appliedMethod !== 'all') {
         invoicesQuery = invoicesQuery.eq('payment_method_id', appliedMethod);
         creditsQuery = creditsQuery.eq('payment_method_id', appliedMethod);
         depositsQuery = depositsQuery.eq('payment_method_id', appliedMethod);
+        allocationsQuery = allocationsQuery.eq('payment_method_id', appliedMethod);
       }
 
-      const [{ data: invoices, error: invError }, { data: credits, error: crError }, { data: deposits }] = await Promise.all([
+      const [{ data: invoices, error: invError }, { data: credits, error: crError }, { data: deposits }, { data: allocations, error: allocError }] = await Promise.all([
         invoicesQuery,
         creditsQuery,
-        depositsQuery
+        depositsQuery,
+        allocationsQuery
       ]);
 
       if (invError) console.error('❌ Invoices error:', invError);
       if (crError) console.error('❌ Credits error:', crError);
+      if (allocError) console.error('❌ Allocations error:', allocError);
 
       console.log('📊 [Frontend] Loaded invoices for charts:', invoices?.length || 0);
       console.log('📊 [Frontend] Loaded credits for charts:', credits?.length || 0);
       console.log('📊 [Frontend] Loaded deposits for charts:', deposits?.length || 0);
+      console.log('📊 [Frontend] Loaded allocations for charts:', allocations?.length || 0);
 
       // Use DATABASE totals for stats (accurate)
       const totalInvoices = aggregations?.[0]?.total_invoices_amount || 0;
@@ -554,17 +639,52 @@ export default function DashboardPage() {
       const approvedDepositsAmount = approvedDeposits.reduce((sum, d) => sum + d.net_amount, 0);
       const pendingDepositsAmount = pendingDeposits.reduce((sum, d) => sum + d.net_amount, 0);
       
-      const gapAmount = netSales - approvedDepositsAmount;
-      const gapAfterPending = netSales - approvedDepositsAmount - pendingDepositsAmount;
+      // Actual deposits = sum of allocated_amount from deposit allocations table
+      const actualDepositsAmount = allocations?.reduce((sum, a) => sum + a.allocated_amount, 0) || 0;
+      const actualDepositsCount = allocations?.length || 0;
+      
+      // 🔍 LOGGING: Track actual deposits calculation
+      console.log('💜 [ACTUAL DEPOSITS - FROM APP] Allocations Raw Data:', allocations);
+      console.log('💜 [ACTUAL DEPOSITS - FROM APP] Calculation Details:', {
+        totalRecords: allocations?.length || 0,
+        totalAllocatedAmount: actualDepositsAmount,
+        dateRange: { start: appliedStartDate, end: appliedEndDate },
+        paymentMethod: appliedMethod,
+        formatted: `EGP ${actualDepositsAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+      });
+      
+      const gapAmount = netSales - actualDepositsAmount;
+      const gapAfterPending = netSales - actualDepositsAmount - pendingDepositsAmount;
+
+      // Compute grouped stats from deposit_allocations for main loader as well
+      const groupMapMain: Record<string, number> = {};
+      (allocations || []).forEach(a => {
+        const pm = a.payment_method_id || 'unknown';
+        const n = a && a.allocated_amount != null ? Number(a.allocated_amount) : 0;
+        const amt = Number.isFinite(n) ? n : 0;
+        groupMapMain[pm] = (groupMapMain[pm] || 0) + amt;
+      });
+      const approvedDepositsGroupCountMain = Object.keys(groupMapMain).length;
+      const approvedDepositsGroupAmountMain = Object.values(groupMapMain).reduce((s, n) => s + n, 0);
 
       setStats({
         totalSales: netSales,  // Use database total
         approvedDepositsAmount,
         pendingDepositsAmount,
         approvedDepositsCount: approvedDeposits.length,
+        approvedDepositsGroupCount: approvedDepositsGroupCountMain,
+        approvedDepositsGroupAmount: approvedDepositsGroupAmountMain,
         pendingDepositsCount: pendingDeposits.length,
+        actualDepositsAmount,
+        actualDepositsCount,
         gapAmount,
         gapAfterPending,
+      });
+      
+      // 🔍 LOGGING: Confirm stats updated
+      console.log('✅ [ACTUAL DEPOSITS] Stats Updated:', {
+        actualDepositsAmount,
+        actualDepositsCount
       });
 
       // ============================================
@@ -964,12 +1084,29 @@ export default function DashboardPage() {
       color: 'bg-green-500',
     },
     {
+      title: 'Actual Deposits',
+      value: formatCurrency(stats.actualDepositsAmount),
+      subtitle: `${stats.actualDepositsCount} Actual Deposits`,
+      icon: Wallet,
+      color: 'bg-purple-500',
+    },
+    {
       title: 'Approved Deposits',
-      value: formatCurrency(stats.approvedDepositsAmount),
-      subtitle: `${stats.approvedDepositsCount} deposits`,
+      value: (
+        <div>
+          <div className="text-2xl font-semibold text-gray-900">{formatCurrency(stats.approvedDepositsGroupAmount)}</div>
+          {/* <div className="text-sm text-gray-600">{formatCurrency(stats.approvedDepositsGroupAmount)} grouped ({stats.approvedDepositsGroupCount} groups)</div> */}
+                    {/* <div className="text-sm text-gray-600"> ({stats.approvedDepositsGroupCount} groups)</div> */}
+
+        </div>
+      ),
+      // subtitle: (
+      //   <div className="text-xs text-gray-500">{stats.approvedDepositsCount} deposits (individual)</div>
+      // ),
       icon: CheckCircle,
       color: 'bg-blue-500',
     },
+
     {
       title: 'Pending Deposits',
       value: formatCurrency(stats.pendingDepositsAmount),
@@ -987,6 +1124,16 @@ export default function DashboardPage() {
       color: stats.gapAmount > 0 ? 'bg-red-500' : 'bg-green-500',
     },
   ];
+  
+  // 🔍 LOGGING: Log when cards are rendered
+  console.log('📊 [DASHBOARD CARDS] Rendering with stats:', {
+    actualDepositsAmount: stats.actualDepositsAmount,
+    actualDepositsCount: stats.actualDepositsCount,
+    formatted: `EGP ${stats.actualDepositsAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${stats.actualDepositsCount} allocations)`,
+    approvedDepositsAmount: stats.approvedDepositsAmount,
+    totalSales: stats.totalSales,
+    gap: stats.gapAmount
+  });
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -1085,13 +1232,13 @@ export default function DashboardPage() {
         </div>
 
         {/* Stats Cards */}
-        <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4 mb-8">
+        <div className="grid grid-cols-1 gap-8 sm:grid-cols-2 lg:grid-cols-5 mb-8">
           {statCards.map((stat, index) => {
             const Icon = stat.icon;
             return (
               <div
                 key={index}
-                className="bg-white overflow-hidden shadow rounded-lg"
+                className="bg-white overflow-hidden shadow rounded-lg min-w-[260px]"
               >
                 <div className="p-5">
                   <div className="flex items-center">
@@ -1104,7 +1251,7 @@ export default function DashboardPage() {
                           {stat.title}
                         </dt>
                         <dd>
-                          <div className="text-2xl font-semibold text-gray-900">
+                          <div className="text-2xl font-semibold text-gray-900 min-w-[220px] whitespace-nowrap">
                             {stat.value}
                           </div>
                           <div className="mt-1 text-xs text-gray-500">

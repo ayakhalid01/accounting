@@ -21,10 +21,13 @@ DECLARE
   v_older_deposits_used NUMERIC;
   v_remaining_gap NUMERIC;
   v_day_record RECORD;
+  v_method RECORD; -- json element from method_group
+  v_pmid UUID;
+  v_allocated_by_prior_methods NUMERIC; -- allocations by prior methods for a given day
 BEGIN
-  -- Get deposit details including created_at for FIFO comparison
+  -- Get deposit details including created_at and method_group for FIFO comparison
   SELECT 
-    id, start_date, end_date, net_amount, payment_method_id, status, created_at
+    id, start_date, end_date, net_amount, payment_method_id, method_group, status, created_at
   INTO v_deposit
   FROM deposits
   WHERE id = p_deposit_id;
@@ -41,90 +44,117 @@ BEGIN
   -- Initialize deposit balance
   v_deposit_balance := v_deposit.net_amount;
 
-  -- OPTIMIZATION: Pre-calculate all daily sales and older allocations in one query
-  FOR v_day_record IN
-    WITH date_series AS (
-      SELECT d::DATE as day
-      FROM generate_series(v_deposit.start_date, v_deposit.end_date, '1 day'::interval) d
-    ),
-    daily_invoices AS (
-      SELECT 
-        sale_order_date::DATE as day,
-        SUM(amount_total) as total
-      FROM invoices
-      WHERE state = 'posted'
-        AND sale_order_date::DATE BETWEEN v_deposit.start_date AND v_deposit.end_date
-        AND payment_method_id = v_deposit.payment_method_id
-      GROUP BY sale_order_date::DATE
-    ),
-    daily_credits AS (
-      SELECT 
-        sale_order_date::DATE as day,
-        SUM(ABS(amount_total)) as total
-      FROM credit_notes
-      WHERE state = 'posted'
-        AND original_invoice_id IS NOT NULL
-        AND sale_order_date::DATE BETWEEN v_deposit.start_date AND v_deposit.end_date
-        AND payment_method_id = v_deposit.payment_method_id
-      GROUP BY sale_order_date::DATE
-    ),
-    older_allocations AS (
-      SELECT 
-        da.allocation_date as day,
-        SUM(da.allocated_amount) as allocated
-      FROM deposit_allocations da
-      JOIN deposits d ON d.id = da.deposit_id
-      WHERE da.allocation_date BETWEEN v_deposit.start_date AND v_deposit.end_date
-        AND d.status = 'approved'
-        AND d.id != p_deposit_id
-        AND (d.start_date < v_deposit.start_date OR (d.start_date = v_deposit.start_date AND d.created_at < v_deposit.created_at))
-        AND da.payment_method_id = v_deposit.payment_method_id
-      GROUP BY da.allocation_date
-    )
-    SELECT 
-      ds.day,
-      COALESCE(di.total, 0) - COALESCE(dc.total, 0) as sales,
-      COALESCE(oa.allocated, 0) as older_allocated
-    FROM date_series ds
-    LEFT JOIN daily_invoices di ON di.day = ds.day
-    LEFT JOIN daily_credits dc ON dc.day = ds.day
-    LEFT JOIN older_allocations oa ON oa.day = ds.day
-    ORDER BY ds.day
+  -- Iterate payment methods in order (method_group if present, otherwise single payment_method_id)
+  FOR v_method IN
+    SELECT elem
+    FROM jsonb_array_elements(
+      COALESCE(NULLIF(v_deposit.method_group::jsonb, '[]'::jsonb), jsonb_build_array(jsonb_build_object('payment_method_id', v_deposit.payment_method_id::text)))
+    ) AS t(elem)
   LOOP
-    v_day := v_day_record.day;
-    v_daily_sales := v_day_record.sales;
-    v_older_deposits_used := v_day_record.older_allocated;
+    -- read payment_method_id (may be text in JSON)
+    v_pmid := NULL;
+    BEGIN
+      v_pmid := (v_method.elem ->> 'payment_method_id')::uuid;
+    EXCEPTION WHEN others THEN
+      v_pmid := NULL;
+    END;
 
-    -- Calculate remaining gap after older deposits
-    v_remaining_gap := GREATEST(0, v_daily_sales - v_older_deposits_used);
-    
-    -- This deposit covers as much of the remaining gap as possible
-    v_allocated := LEAST(v_deposit_balance, v_remaining_gap);
-    v_gap := GREATEST(0, v_remaining_gap - v_allocated);
+    -- If method element does not contain a valid payment_method_id, skip and log
+    IF v_pmid IS NULL THEN
+      INSERT INTO deposit_gap_logs(start_date, end_date, payment_method_id, exclude_deposit_id, source, gap_value)
+      VALUES (v_deposit.start_date, v_deposit.end_date, NULL, p_deposit_id, 'populate_skipped_missing_method', 0);
+      CONTINUE;
+    END IF;
 
-    -- Insert allocation record
-    INSERT INTO deposit_allocations (
-      deposit_id,
-      allocation_date,
-      payment_method_id,
-      daily_sales,
-      allocated_amount,
-      daily_gap,
-      deposit_balance_start,
-      deposit_balance_end
-    ) VALUES (
-      p_deposit_id,
-      v_day,
-      v_deposit.payment_method_id,
-      v_daily_sales,
-      v_allocated,
-      v_gap,
-      v_deposit_balance,
-      v_deposit_balance - v_allocated
-    );
+    -- For each day in the deposit date range compute that method's sales and how much older approved deposits already covered
+    FOR v_day_record IN
+      WITH date_series AS (
+        SELECT d::DATE as day
+        FROM generate_series(v_deposit.start_date, v_deposit.end_date, '1 day'::interval) d
+      ),
+      daily_invoices AS (
+        SELECT 
+          sale_order_date::DATE as day,
+          SUM(amount_total) as total
+        FROM invoices
+        WHERE state = 'posted'
+          AND sale_order_date::DATE BETWEEN v_deposit.start_date AND v_deposit.end_date
+          AND payment_method_id = v_pmid
+        GROUP BY sale_order_date::DATE
+      ),
+      daily_credits AS (
+        SELECT 
+          sale_order_date::DATE as day,
+          SUM(ABS(amount_total)) as total
+        FROM credit_notes
+        WHERE state = 'posted'
+          AND original_invoice_id IS NOT NULL
+          AND sale_order_date::DATE BETWEEN v_deposit.start_date AND v_deposit.end_date
+          AND payment_method_id = v_pmid
+        GROUP BY sale_order_date::DATE
+      ),
+      older_allocations AS (
+        SELECT 
+          da.allocation_date as day,
+          SUM(da.allocated_amount) as allocated
+        FROM deposit_allocations da
+        JOIN deposits d ON d.id = da.deposit_id
+        WHERE da.allocation_date BETWEEN v_deposit.start_date AND v_deposit.end_date
+          AND d.status = 'approved'
+          AND d.id != p_deposit_id
+          AND (d.start_date < v_deposit.start_date OR (d.start_date = v_deposit.start_date AND d.created_at < v_deposit.created_at))
+          AND da.payment_method_id = v_pmid
+        GROUP BY da.allocation_date
+      )
+      SELECT 
+        ds.day,
+        COALESCE(di.total, 0) - COALESCE(dc.total, 0) as sales,
+        COALESCE(oa.allocated, 0) as older_allocated
+      FROM date_series ds
+      LEFT JOIN daily_invoices di ON di.day = ds.day
+      LEFT JOIN daily_credits dc ON dc.day = ds.day
+      LEFT JOIN older_allocations oa ON oa.day = ds.day
+      ORDER BY ds.day
+    LOOP
+      v_day := v_day_record.day;
+      v_daily_sales := v_day_record.sales;
+      v_older_deposits_used := v_day_record.older_allocated;
 
-    -- Update running balance
-    v_deposit_balance := v_deposit_balance - v_allocated;
+      -- Calculate already allocated by previous methods of THIS deposit for this day
+      v_allocated_by_prior_methods := COALESCE((SELECT SUM(allocated_amount) FROM deposit_allocations WHERE deposit_id = p_deposit_id AND allocation_date = v_day), 0);
+
+      -- Calculate remaining gap after older deposits and prior methods
+      v_remaining_gap := GREATEST(0, v_daily_sales - v_older_deposits_used - v_allocated_by_prior_methods);
+      
+      -- This deposit covers as much of the remaining gap as possible for this method
+      v_allocated := LEAST(v_deposit_balance, v_remaining_gap);
+      v_gap := GREATEST(0, v_remaining_gap - v_allocated);
+
+      -- Insert allocation record for this method
+      INSERT INTO deposit_allocations (
+        deposit_id,
+        allocation_date,
+        payment_method_id,
+        daily_sales,
+        allocated_amount,
+        daily_gap,
+        deposit_balance_start,
+        deposit_balance_end
+      ) VALUES (
+        p_deposit_id,
+        v_day,
+        v_pmid,
+        v_daily_sales,
+        v_allocated,
+        v_gap,
+        v_deposit_balance,
+        v_deposit_balance - v_allocated
+      );
+
+      -- Update running balance
+      v_deposit_balance := v_deposit_balance - v_allocated;
+    END LOOP;
+
   END LOOP;
 
   -- Update deposit summary columns

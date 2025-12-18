@@ -286,6 +286,7 @@ export type TaxCalculationMethod = 'fixed_percent' | 'fixed_amount' | 'column_ba
 export interface DepositSettings {
   id: string;
   payment_method_id: string;
+  // Standardized naming: use _name suffix throughout the app
   filter_column_name?: string;
   filter_include_values?: string[];
   amount_column_name: string;

@@ -67,10 +67,22 @@ export function filterRowsByColumn(
   columnName: string | undefined,
   values: string[] | undefined
 ): Record<string, any>[] {
-  if (!columnName || !values || values.length === 0) {
+  // If no column or no values selected, apply strict filter:
+  // - If columnName exists but values is empty/undefined: return no rows (filter is defined but empty)
+  // - If columnName doesn't exist: return all rows (no filter configured)
+  
+  if (!columnName) {
+    // No filter column configured → include all rows
     return rows;
   }
 
+  // Filter column IS configured
+  if (!values || values.length === 0) {
+    // Filter column configured but NO values selected → return empty (exclude all)
+    return [];
+  }
+
+  // Filter column configured AND values selected → return matching rows
   return rows.filter(row => {
     const rowValue = String(row[columnName] || '').trim();
     return values.includes(rowValue);
