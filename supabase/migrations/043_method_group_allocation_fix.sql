@@ -38,7 +38,7 @@ BEGIN
       END;
 
       -- Compute gap available for this method (exclude current deposit id to avoid double-counting)
-      v_gap := calculate_gap_in_period(NEW.start_date, NEW.end_date, v_pmid, NEW.id);
+      v_gap := calculate_gap_in_period(NEW.start_date, NEW.end_date, v_pmid, NEW.id, TRUE);
 
       -- sum total available
       v_total_gap_avail := v_total_gap_avail + GREATEST(0, v_gap);

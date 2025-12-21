@@ -857,51 +857,174 @@ export default function DepositsPage() {
 
       if (group && group.length > 0) {
         console.log('🔀 deposit has method_group:', group.map(g => g.payment_method_id));
-        let remainingAmount = deposit.net_amount;
+        const safeNumber = (v: any) => {
+          const n = Number(v);
+          return Number.isFinite(n) ? n : 0;
+        };
+        let remainingAmount = safeNumber(deposit.net_amount);
         const per_method: MethodPreview[] = [];
         let total_gap_covered = 0;
 
         for (const m of group) {
-          if (remainingAmount <= 0) {
-            per_method.push({ payment_method_id: m.payment_method_id, name: m.name_en, gap_available: 0, gap_covered: 0, gap_uncovered: 0, remaining: 0 });
-            continue;
+          // Prefer server-side method summary (net_invoices and approved_alloc) for method-specific gap
+          try {
+            // Resolve payment method id (support UUID or name/id-text forms in method_group)
+            let resolvedPmId: string | null = null;
+            const isUuid = (val: any) => typeof val === 'string' && /^[0-9a-fA-F-]{36}$/.test(val);
+
+            if (m.payment_method_id && isUuid(m.payment_method_id)) {
+              resolvedPmId = m.payment_method_id;
+            } else {
+              // try to resolve by id-text or name fields
+              const lookupVal = (m.payment_method_id || m.name_en || m.name || '').trim();
+              if (lookupVal) {
+                const { data: pmRows } = await supabase
+                  .from('payment_methods')
+                  .select('id,name_en,name')
+                  .or(`id.eq.${lookupVal},name.ilike.%${lookupVal}%,name_en.ilike.%${lookupVal}%`)
+                  .limit(1);
+
+                if (pmRows && pmRows.length > 0) {
+                  resolvedPmId = pmRows[0].id;
+                  console.log('🔎 Resolved method group item to id', lookupVal, '->', resolvedPmId);
+                }
+              }
+            }
+
+            const { data: methodSummary, error: msError } = await supabase.rpc('get_method_summaries', {
+              p_start_date: deposit.start_date,
+              p_end_date: deposit.end_date,
+              p_payment_method_id: resolvedPmId || null
+            });
+
+            if (msError) {
+              console.error('get_method_summaries RPC error for method', m.payment_method_id, msError);
+              throw msError;
+            }
+
+            // If we passed null and got multiple rows, try to pick matching name if available
+            let ms: any = null;
+            if (Array.isArray(methodSummary)) {
+              if (resolvedPmId) {
+                ms = methodSummary.find((r: any) => r.payment_method_id === resolvedPmId) || methodSummary[0] || null;
+              } else if (m.name_en || m.name) {
+                const nameMatch = (m.name_en || m.name).toLowerCase();
+                ms = methodSummary.find((r: any) => (r.name || '').toLowerCase().includes(nameMatch)) || methodSummary[0] || null;
+              } else {
+                ms = methodSummary[0] || null;
+              }
+            } else {
+              ms = (methodSummary && methodSummary[0]) || null;
+            }
+
+            const netInvoices = ms ? Number(ms.net_invoices || 0) : 0;
+            const approvedAlloc = ms ? Number(ms.approved_alloc || 0) : 0;
+
+            // Gap per method = net_invoices - approved_alloc (per your requested change)
+            let v_gap = Math.max(0, netInvoices - approvedAlloc);
+
+            // If we found no gap from methodSummaries, double-check with calculate_gap_in_period (more accurate when allocations exist)
+            if (v_gap === 0 && resolvedPmId) {
+              try {
+                const { data: gapData, error: gapErr } = await supabase.rpc('calculate_gap_in_period', {
+                  p_start_date: deposit.start_date,
+                  p_end_date: deposit.end_date,
+                  p_payment_method_id: resolvedPmId,
+                  p_exclude_deposit_id: null,
+                  p_use_latest: true
+                });
+
+                if (!gapErr) {
+                  v_gap = Number(gapData) || 0;
+                  if (v_gap > 0) console.log('🔍 calculate_gap_in_period returned gap for', resolvedPmId, v_gap);
+                } else {
+                  console.warn('calculate_gap_in_period rpc error while checking fallback gap for', resolvedPmId, gapErr);
+                }
+              } catch (e) {
+                console.warn('Exception calling calculate_gap_in_period fallback for', resolvedPmId, e);
+              }
+            }
+
+            // Always show pre-existing gap (gap_available) even when remainingAmount is 0
+            const gapAvailable = safeNumber(v_gap);
+
+            if (remainingAmount <= 0) {
+              per_method.push({
+                payment_method_id: resolvedPmId || m.payment_method_id,
+                name: m.name_en || m.name,
+                gap_available: gapAvailable,
+                gap_covered: 0,
+                gap_uncovered: gapAvailable,
+                remaining: 0
+              });
+              continue;
+            }
+
+            // this method can cover at most v_gap, but not more than remainingAmount
+            const gap_covered_for_method = Math.min(remainingAmount, v_gap);
+            remainingAmount = remainingAmount - gap_covered_for_method;
+
+            let gap_uncovered_for_method = Math.max(0, v_gap - gap_covered_for_method);
+
+            // numeric safety
+            const safe_v_gap_main = safeNumber(v_gap);
+            const safe_gap_covered_main = safeNumber(gap_covered_for_method);
+            gap_uncovered_for_method = Number.isFinite(gap_uncovered_for_method) ? gap_uncovered_for_method : Math.max(0, safe_v_gap_main - safe_gap_covered_main);
+
+            per_method.push({
+              payment_method_id: resolvedPmId || m.payment_method_id,
+              name: m.name_en || m.name,
+              gap_available: safe_v_gap_main,
+              gap_covered: safe_gap_covered_main,
+              gap_uncovered: safeNumber(gap_uncovered_for_method),
+              remaining: safeNumber(remainingAmount)
+            });
+
+            total_gap_covered += safe_gap_covered_main;
+          } catch (rpcErr) {
+            console.warn('Falling back to calculate_gap_in_period for method', m.payment_method_id, rpcErr);
+
+            // Fallback to existing allocate-in-period semantics
+            const { data, error } = await supabase.rpc('calculate_gap_in_period', {
+              p_start_date: deposit.start_date,
+              p_end_date: deposit.end_date,
+              p_payment_method_id: m.payment_method_id || null,
+              p_exclude_deposit_id: null, // include this deposit's allocations in the preview
+              p_use_latest: true
+            });
+
+            if (error) {
+              console.error('RPC error for method fallback', m.payment_method_id, error);
+              throw error;
+            }
+
+            const v_gap = Number(data) || 0;
+
+            const gap_covered_for_method = Math.min(remainingAmount, v_gap);
+            remainingAmount = remainingAmount - gap_covered_for_method;
+
+            let gap_uncovered_for_method = Math.max(0, v_gap - gap_covered_for_method);
+
+            // ensure numeric safety
+            const safe_v_gap = safeNumber(v_gap);
+            const safe_gap_covered = safeNumber(gap_covered_for_method);
+            gap_uncovered_for_method = Number.isFinite(gap_uncovered_for_method) ? gap_uncovered_for_method : Math.max(0, safe_v_gap - safe_gap_covered);
+
+            per_method.push({
+              payment_method_id: m.payment_method_id,
+              name: m.name_en || m.name,
+              gap_available: safe_v_gap,
+              gap_covered: safe_gap_covered,
+              gap_uncovered: safeNumber(gap_uncovered_for_method),
+              remaining: safeNumber(remainingAmount)
+            });
+
+            total_gap_covered += safe_gap_covered;
           }
-
-          const { data, error } = await supabase.rpc('calculate_gap_in_period', {
-            p_start_date: deposit.start_date,
-            p_end_date: deposit.end_date,
-            p_payment_method_id: m.payment_method_id || null,
-            p_exclude_deposit_id: null, // include this deposit's allocations in the preview
-            p_use_latest: true
-          });
-
-          if (error) {
-            console.error('RPC error for method', m.payment_method_id, error);
-            throw error;
-          }
-
-          const v_gap = Number(data) || 0;
-
-          // this method can cover at most v_gap, but not more than remainingAmount
-          const gap_covered_for_method = Math.min(remainingAmount, v_gap);
-          remainingAmount = remainingAmount - gap_covered_for_method;
-
-          const gap_uncovered_for_method = Math.max(0, v_gap - gap_covered_for_method);
-
-          per_method.push({
-            payment_method_id: m.payment_method_id,
-            name: m.name_en,
-            gap_available: v_gap,
-            gap_covered: gap_covered_for_method,
-            gap_uncovered: gap_uncovered_for_method,
-            remaining: remainingAmount
-          });
-
-          total_gap_covered += gap_covered_for_method;
         }
 
-        const total_remaining = Math.max(0, deposit.net_amount - total_gap_covered);
-        const total_gap_uncovered = per_method.reduce((acc, pm) => acc + pm.gap_uncovered, 0);
+        const total_remaining = Math.max(0, safeNumber(deposit.net_amount) - total_gap_covered);
+        const total_gap_uncovered = per_method.reduce((acc, pm) => acc + safeNumber(pm.gap_uncovered), 0);
 
         const preview: AllocationPreview = {
           gap_covered: total_gap_covered,

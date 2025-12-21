@@ -23,7 +23,13 @@ DECLARE
   v_day_record RECORD;
   v_method RECORD; -- json element from method_group
   v_pmid UUID;
+  v_resolution_source TEXT := NULL; -- how the method id was resolved (direct_id, id_text, name_en, name)
   v_allocated_by_prior_methods NUMERIC; -- allocations by prior methods for a given day
+  v_method_gap_total NUMERIC := 0; -- total uncovered gap for this method (calculated before allocating)
+  v_method_allocated_so_far NUMERIC := 0; -- how much we've allocated to this method so far within this deposit
+  v_allowed_for_day NUMERIC := 0; -- temporary cap per day
+  v_allocated_total NUMERIC := 0; -- totals per method for this deposit (used for logging)
+  v_gap_total NUMERIC := 0; -- totals per method gap for this deposit (used for logging)
 BEGIN
   -- Get deposit details including created_at and method_group for FIFO comparison
   SELECT 
@@ -58,13 +64,71 @@ BEGIN
     EXCEPTION WHEN others THEN
       v_pmid := NULL;
     END;
+    IF v_pmid IS NOT NULL THEN
+      v_resolution_source := 'direct_id';
+    END IF;
 
-    -- If method element does not contain a valid payment_method_id, skip and log
+    -- If the element did not provide a valid UUID, try to resolve by string id or by name
+    IF v_pmid IS NULL THEN
+      -- Try using the raw string value (could be id as text)
+      BEGIN
+        v_pmid := NULL;
+        IF (v_method.elem ->> 'payment_method_id') IS NOT NULL THEN
+          SELECT id::uuid INTO v_pmid FROM payment_methods WHERE id::text = (v_method.elem ->> 'payment_method_id') LIMIT 1;
+        END IF;
+      EXCEPTION WHEN others THEN
+        v_pmid := NULL;
+      END;
+      IF v_pmid IS NOT NULL THEN
+        v_resolution_source := 'id_text';
+      END IF;
+    END IF;
+
+    IF v_pmid IS NULL THEN
+      -- Try resolving by name fields if present (name_en or name)
+      BEGIN
+        IF (v_method.elem ->> 'name_en') IS NOT NULL THEN
+          SELECT id::uuid INTO v_pmid FROM payment_methods WHERE name_en = (v_method.elem ->> 'name_en') LIMIT 1;
+        END IF;
+      EXCEPTION WHEN others THEN
+        v_pmid := NULL;
+      END;
+      IF v_pmid IS NOT NULL THEN
+        v_resolution_source := 'name_en';
+      END IF;
+    END IF;
+
+    IF v_pmid IS NULL THEN
+      BEGIN
+        IF (v_method.elem ->> 'name') IS NOT NULL THEN
+          SELECT id::uuid INTO v_pmid FROM payment_methods WHERE name = (v_method.elem ->> 'name') LIMIT 1;
+        END IF;
+      EXCEPTION WHEN others THEN
+        v_pmid := NULL;
+      END;
+      IF v_pmid IS NOT NULL THEN
+        v_resolution_source := 'name';
+      END IF;
+    END IF;
+
+    -- If method element still does not contain a valid payment_method_id, skip and log
     IF v_pmid IS NULL THEN
       INSERT INTO deposit_gap_logs(start_date, end_date, payment_method_id, exclude_deposit_id, source, gap_value)
       VALUES (v_deposit.start_date, v_deposit.end_date, NULL, p_deposit_id, 'populate_skipped_missing_method', 0);
       CONTINUE;
     END IF;
+
+    -- Compute total remaining gap for this method (exclude this deposit to get pre-existing uncovered gap)
+    v_method_gap_total := calculate_gap_in_period(v_deposit.start_date, v_deposit.end_date, v_pmid, p_deposit_id, TRUE);
+
+    -- If method has no uncovered gap, skip allocations for this method (log and continue)
+    IF COALESCE(v_method_gap_total, 0) <= 0 THEN
+      INSERT INTO deposit_gap_logs(start_date, end_date, payment_method_id, exclude_deposit_id, source, gap_value)
+      VALUES (v_deposit.start_date, v_deposit.end_date, v_pmid, p_deposit_id, 'populate_method_no_gap:' || COALESCE(v_resolution_source,'unknown'), 0);
+      CONTINUE;
+    END IF;
+
+    v_method_allocated_so_far := 0;
 
     -- For each day in the deposit date range compute that method's sales and how much older approved deposits already covered
     FOR v_day_record IN
@@ -134,10 +198,12 @@ BEGIN
       -- Calculate remaining gap after older deposits and prior methods
       v_remaining_gap := GREATEST(0, v_daily_sales - v_older_deposits_used - v_allocated_by_prior_methods);
       
-      -- This deposit covers as much of the remaining gap as possible for this method
-      v_allocated := LEAST(v_deposit_balance, v_remaining_gap);
-      v_gap := GREATEST(0, v_remaining_gap - v_allocated);
+      -- Cap day's remaining gap by the method's remaining uncovered gap (do not allocate more than v_method_gap_total)
+      v_allowed_for_day := LEAST(v_remaining_gap, GREATEST(0, v_method_gap_total - v_method_allocated_so_far));
 
+      -- This deposit covers as much of the allowed_for_day as possible, but not more than deposit balance
+      v_allocated := LEAST(v_deposit_balance, v_allowed_for_day);
+      v_gap := GREATEST(0, v_remaining_gap - v_allocated);
       -- Insert allocation record for this method
       INSERT INTO deposit_allocations (
         deposit_id,
@@ -159,9 +225,26 @@ BEGIN
         v_deposit_balance - v_allocated
       );
 
-      -- Update running balance
+      -- Update running balance and method-allocated tracker
       v_deposit_balance := v_deposit_balance - v_allocated;
+      v_method_allocated_so_far := v_method_allocated_so_far + v_allocated;
     END LOOP;
+
+    -- After processing this method for all days, compute totals inserted (useful for debugging)
+    SELECT COALESCE(SUM(allocated_amount),0), COALESCE(SUM(daily_gap),0)
+    INTO v_allocated_total, v_gap_total
+    FROM deposit_allocations
+    WHERE deposit_id = p_deposit_id AND payment_method_id = v_pmid;
+
+    -- Insert detailed logs so we can track what happened on approve
+    INSERT INTO deposit_gap_logs(start_date, end_date, payment_method_id, exclude_deposit_id, source, gap_value)
+    VALUES (v_deposit.start_date, v_deposit.end_date, v_pmid, p_deposit_id, 'populate_method_requested_gap:' || COALESCE(v_resolution_source,'unknown'), v_method_gap_total);
+
+    INSERT INTO deposit_gap_logs(start_date, end_date, payment_method_id, exclude_deposit_id, source, gap_value)
+    VALUES (v_deposit.start_date, v_deposit.end_date, v_pmid, p_deposit_id, 'populate_method_allocated:' || COALESCE(v_resolution_source,'unknown'), v_allocated_total);
+
+    INSERT INTO deposit_gap_logs(start_date, end_date, payment_method_id, exclude_deposit_id, source, gap_value)
+    VALUES (v_deposit.start_date, v_deposit.end_date, v_pmid, p_deposit_id, 'populate_method_gap:' || COALESCE(v_resolution_source,'unknown'), v_gap_total);
 
   END LOOP;
 

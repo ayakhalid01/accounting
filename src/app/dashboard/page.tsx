@@ -6,6 +6,7 @@ import Navigation from '@/components/Navigation';
 import { auth } from '@/lib/supabase/auth';
 import { supabase } from '@/lib/supabase/client';
 import { formatCurrency } from '@/lib/utils';
+import { getCache, setCache } from '@/lib/cache';
 import { 
   DollarSign, 
   CheckCircle,
@@ -398,9 +399,27 @@ export default function DashboardPage() {
     checkAuthAndLoadData();
   }, [router]);
 
+  // Cache key helper
+  const makeDashboardCacheKey = (s: string, e: string, m: string, pt: PeriodType) => `dashboard:${s}:${e}:${m}:${pt}`;
+
   useEffect(() => {
     if (appliedStartDate && appliedEndDate) {
-      loadDashboardData();
+      const cacheKey = makeDashboardCacheKey(appliedStartDate, appliedEndDate, appliedMethod, appliedPeriodType);
+      const cached = getCache<any>(cacheKey);
+
+      if (cached) {
+        console.log('⚡ Using cached dashboard data for', cacheKey);
+        if (cached.stats) setStats(cached.stats);
+        if (cached.periodComparisons) setPeriodComparisons(cached.periodComparisons);
+        if (cached.methodSummaries) setMethodSummaries(cached.methodSummaries);
+        if (cached.paymentMethods) setPaymentMethods(cached.paymentMethods);
+        // Show cached immediately then refresh in background
+        setLoading(false);
+        loadDashboardData({ background: true }).catch(err => console.error('Background refresh failed', err));
+      } else {
+        setLoading(true);
+        loadDashboardData();
+      }
     }
   }, [appliedStartDate, appliedEndDate, appliedMethod, appliedPeriodType]);
 
@@ -436,6 +455,11 @@ export default function DashboardPage() {
       console.log('🔍 Loading data with filters:', { filterStartDate, filterEndDate, filterMethod, filterPeriodType });
       console.log('🔄 [DASHBOARD] Starting data load for payment method:', filterMethod);
       
+      // ============================================
+      // STEP 0: cache key
+      // ============================================
+      const cacheKey = makeDashboardCacheKey(filterStartDate, filterEndDate, filterMethod, filterPeriodType);
+
       // ============================================
       // STEP 1: Get accurate totals from database (bypasses 1000 limit)
       // ============================================
@@ -634,6 +658,30 @@ export default function DashboardPage() {
           }));
           
           setPeriodComparisons(periods);
+
+          // Save to cache
+          try {
+            setCache(cacheKey, {
+              stats: {
+                totalSales: netSales,
+                approvedDepositsAmount,
+                pendingDepositsAmount,
+                approvedDepositsCount: approvedDeposits.length,
+                approvedDepositsGroupCount,
+                approvedDepositsGroupAmount,
+                pendingDepositsCount: pendingDeposits.length,
+                actualDepositsAmount,
+                actualDepositsCount,
+                gapAmount,
+                gapAfterPending,
+              },
+              periodComparisons: periods,
+              methodSummaries: methodSummaries,
+              paymentMethods
+            });
+          } catch (err) {
+            console.warn('Failed to set dashboard cache', err);
+          }
         }
       } else if (filterPeriodType === 'monthly') {
         // Use monthly aggregations (grouped from daily data)
@@ -651,18 +699,50 @@ export default function DashboardPage() {
           console.log('📊 [Database] Monthly periods:', monthlyData?.length || 0);
           
           // Convert database results to PeriodComparison format
-          const periods: PeriodComparison[] = (monthlyData || []).map((month: any) => ({
-            period: new Date(month.month_start).toLocaleDateString('en-US', { month: 'short', year: 'numeric' }),
-            periodStart: month.month_start,
-            periodEnd: month.month_end,
-            sales: month.total_sales,
-            approvedDeposits: month.approved_deposits,
-            pendingDeposits: month.pending_deposits,
-            gap: month.gap,
-            gapAfterPending: month.total_sales - month.approved_deposits - month.pending_deposits,
-          }));
+          const periods: PeriodComparison[] = (monthlyData || []).map((month: any) => {
+            const periodStart = month.period_start || month.month_start;
+            const periodEnd = month.period_end || month.month_end;
+            const periodLabel = month.period_month || (periodStart ? new Date(periodStart).toLocaleDateString('en-US', { month: 'short', year: 'numeric' }) : 'Invalid Date');
+            const sales = Number(month.net_sales ?? month.total_sales ?? 0);
+            const approved = Number(month.approved_deposits ?? month.approved ?? 0);
+            const pending = Number(month.pending_deposits ?? month.pending ?? 0);
+            return {
+              period: periodLabel,
+              periodStart,
+              periodEnd,
+              sales,
+              approvedDeposits: approved,
+              pendingDeposits: pending,
+              gap: Number(sales - approved),
+              gapAfterPending: Number(sales - approved - pending),
+            };
+          });
           
           setPeriodComparisons(periods);
+
+          // Save to cache
+          try {
+            setCache(cacheKey, {
+              stats: {
+                totalSales: netSales,
+                approvedDepositsAmount,
+                pendingDepositsAmount,
+                approvedDepositsCount: approvedDeposits.length,
+                approvedDepositsGroupCount,
+                approvedDepositsGroupAmount,
+                pendingDepositsCount: pendingDeposits.length,
+                actualDepositsAmount,
+                actualDepositsCount,
+                gapAmount,
+                gapAfterPending,
+              },
+              periodComparisons: periods,
+              methodSummaries: methodSummaries,
+              paymentMethods
+            });
+          } catch (err) {
+            console.warn('Failed to set dashboard cache', err);
+          }
         }
       } else {
         // Use monthly aggregations
@@ -699,11 +779,14 @@ export default function DashboardPage() {
     }
   };
 
-  const loadDashboardData = async () => {
+  const loadDashboardData = async (opts?: { background?: boolean }) => {
+    // opts.background === true means don't toggle the full loading UI (used for background refresh)
+    if (!opts?.background) setLoading(true);
     // ...existing code...
     try {
       console.log('🔍 Loading data with filters:', { appliedStartDate, appliedEndDate, appliedMethod, appliedPeriodType });
       console.log('🔄 [DASHBOARD] Starting data load for payment method:', appliedMethod);
+      const cacheKey = makeDashboardCacheKey(appliedStartDate, appliedEndDate, appliedMethod, appliedPeriodType);
       
       // ============================================
       // STEP 1: Get accurate totals from database (bypasses 1000 limit)
@@ -904,6 +987,30 @@ export default function DashboardPage() {
           }));
           
           setPeriodComparisons(periods);
+
+        // Save to cache
+        try {
+          setCache(cacheKey, {
+            stats: {
+              totalSales: netSales,
+              approvedDepositsAmount,
+              pendingDepositsAmount,
+              approvedDepositsCount: approvedDeposits.length,
+              approvedDepositsGroupCount: approvedDepositsGroupCountMain,
+              approvedDepositsGroupAmount: approvedDepositsGroupAmountMain,
+              pendingDepositsCount: pendingDeposits.length,
+              actualDepositsAmount,
+              actualDepositsCount,
+              gapAmount,
+              gapAfterPending,
+            },
+            periodComparisons: periods,
+            methodSummaries: methodSummaries,
+            paymentMethods
+          });
+        } catch (err) {
+          console.warn('Failed to set dashboard cache', err);
+        }
         }
       } else if (appliedPeriodType === 'monthly') {
         // Use monthly aggregations (grouped from daily data)
@@ -921,18 +1028,50 @@ export default function DashboardPage() {
           console.log('📊 [Database] Monthly periods:', monthlyData?.length || 0);
           
           // Convert database results to PeriodComparison format
-          const periods: PeriodComparison[] = (monthlyData || []).map((month: any) => ({
-            period: new Date(month.month_start).toLocaleDateString('en-US', { month: 'short', year: 'numeric' }),
-            periodStart: month.month_start,
-            periodEnd: month.month_end,
-            sales: month.total_sales,
-            approvedDeposits: month.approved_deposits,
-            pendingDeposits: month.pending_deposits,
-            gap: month.gap,
-            gapAfterPending: month.total_sales - month.approved_deposits - month.pending_deposits,
-          }));
+          const periods: PeriodComparison[] = (monthlyData || []).map((month: any) => {
+            const periodStart = month.period_start || month.month_start;
+            const periodEnd = month.period_end || month.month_end;
+            const periodLabel = month.period_month || (periodStart ? new Date(periodStart).toLocaleDateString('en-US', { month: 'short', year: 'numeric' }) : 'Invalid Date');
+            const sales = Number(month.net_sales ?? month.total_sales ?? 0);
+            const approved = Number(month.approved_deposits ?? month.approved ?? 0);
+            const pending = Number(month.pending_deposits ?? month.pending ?? 0);
+            return {
+              period: periodLabel,
+              periodStart,
+              periodEnd,
+              sales,
+              approvedDeposits: approved,
+              pendingDeposits: pending,
+              gap: Number(sales - approved),
+              gapAfterPending: Number(sales - approved - pending),
+            };
+          });
           
           setPeriodComparisons(periods);
+
+          // Save to cache
+          try {
+            setCache(cacheKey, {
+              stats: {
+                totalSales: netSales,
+                approvedDepositsAmount,
+                pendingDepositsAmount,
+                approvedDepositsCount: approvedDeposits.length,
+                approvedDepositsGroupCount: approvedDepositsGroupCountMain,
+                approvedDepositsGroupAmount: approvedDepositsGroupAmountMain,
+                pendingDepositsCount: pendingDeposits.length,
+                actualDepositsAmount,
+                actualDepositsCount,
+                gapAmount,
+                gapAfterPending,
+              },
+              periodComparisons: periods,
+              methodSummaries: methodSummaries,
+              paymentMethods
+            });
+          } catch (err) {
+            console.warn('Failed to set dashboard cache', err);
+          }
         }
       } else {
         // Use monthly aggregations
@@ -962,10 +1101,36 @@ export default function DashboardPage() {
           }));
           
           setPeriodComparisons(periods);
+
+          // Save to cache
+          try {
+            setCache(cacheKey, {
+              stats: {
+                totalSales: netSales,
+                approvedDepositsAmount,
+                pendingDepositsAmount,
+                approvedDepositsCount: approvedDeposits.length,
+                approvedDepositsGroupCount: approvedDepositsGroupCountMain,
+                approvedDepositsGroupAmount: approvedDepositsGroupAmountMain,
+                pendingDepositsCount: pendingDeposits.length,
+                actualDepositsAmount,
+                actualDepositsCount,
+                gapAmount,
+                gapAfterPending,
+              },
+              periodComparisons: periods,
+              methodSummaries: methodSummaries,
+              paymentMethods
+            });
+          } catch (err) {
+            console.warn('Failed to set dashboard cache', err);
+          }
         }
       }
     } catch (err) {
       console.error('❌ Error loading dashboard data:', err);
+    } finally {
+      if (!opts?.background) setLoading(false);
     }
   };
 
@@ -1256,14 +1421,14 @@ export default function DashboardPage() {
   const statCards = [
     {
       title: 'Total Sales',
-      value: formatCurrency(stats.totalSales),
+      value: formatCurrency(Number(stats.totalSales) || 0),
       subtitle: 'In selected period',
       icon: DollarSign,
       color: 'bg-green-500',
     },
     {
       title: 'Actual Deposits',
-      value: formatCurrency(stats.actualDepositsAmount),
+      value: formatCurrency(Number(stats.actualDepositsAmount) || 0),
       subtitle: `${stats.actualDepositsCount} Actual Deposits`,
       icon: Wallet,
       color: 'bg-purple-500',
@@ -1272,7 +1437,7 @@ export default function DashboardPage() {
       title: 'Approved Deposits',
       value: (
         <div>
-          <div className="text-2xl font-semibold text-gray-900">{formatCurrency(stats.approvedDepositsGroupAmount)}</div>
+          <div className="text-2xl font-semibold text-gray-900">{formatCurrency(Number(stats.approvedDepositsGroupAmount) || 0)}</div>
           {/* <div className="text-sm text-gray-600">{formatCurrency(stats.approvedDepositsGroupAmount)} grouped ({stats.approvedDepositsGroupCount} groups)</div> */}
                     {/* <div className="text-sm text-gray-600"> ({stats.approvedDepositsGroupCount} groups)</div> */}
 
@@ -1287,17 +1452,17 @@ export default function DashboardPage() {
 
     {
       title: 'Pending Deposits',
-      value: formatCurrency(stats.pendingDepositsAmount),
+      value: formatCurrency(Number(stats.pendingDepositsAmount) || 0),
       subtitle: `${stats.pendingDepositsCount} awaiting approval`,
       icon: Clock,
       color: 'bg-yellow-500',
     },
     {
       title: 'Gap (Missing)',
-      value: formatCurrency(stats.gapAmount),
+      value: formatCurrency(Number(stats.gapAmount) || 0),
       subtitle: stats.gapAfterPending < 0 
         ? `✅ Covered if pending approved` 
-        : `⚠️ ${formatCurrency(stats.gapAfterPending)} still missing after pending`,
+        : `⚠️ ${formatCurrency(Number(stats.gapAfterPending) || 0)} still missing after pending`,
       icon: AlertTriangle,
       color: stats.gapAmount > 0 ? 'bg-red-500' : 'bg-green-500',
     },
@@ -1559,7 +1724,7 @@ export default function DashboardPage() {
                           <div className="absolute left-0 top-0 bottom-12 flex flex-col justify-between text-xs text-gray-500 pr-2">
                             {[5, 4, 3, 2, 1, 0].map(i => (
                               <div key={i} className="text-right w-16">
-                                {formatCurrency(step * i)}
+                                {formatCurrency(Number(step * i) || 0)}
                               </div>
                             ))}
                           </div>
@@ -1589,7 +1754,7 @@ export default function DashboardPage() {
                                       />
                                       {/* Tooltip */}
                                       <div className="absolute bottom-full mb-2 hidden group-hover:block bg-gray-900 text-white text-[10px] rounded py-1 px-2 whitespace-nowrap z-10">
-                                        {formatCurrency(period.sales)}
+                                        {formatCurrency(Number(period.sales) || 0)}
                                       </div>
                                     </div>
 
@@ -1601,7 +1766,7 @@ export default function DashboardPage() {
                                       />
                                       {/* Tooltip */}
                                       <div className="absolute bottom-full mb-2 hidden group-hover:block bg-gray-900 text-white text-[10px] rounded py-1 px-2 whitespace-nowrap z-10">
-                                        {formatCurrency(period.approvedDeposits)}
+                                        {formatCurrency(Number(period.approvedDeposits) || 0)}
                                       </div>
                                     </div>
 
@@ -1614,7 +1779,7 @@ export default function DashboardPage() {
                                       {/* Tooltip */}
                                       {period.pendingDeposits > 0 && (
                                         <div className="absolute bottom-full mb-2 hidden group-hover:block bg-gray-900 text-white text-[10px] rounded py-1 px-2 whitespace-nowrap z-10">
-                                          {formatCurrency(period.pendingDeposits)}
+                                          {formatCurrency(Number(period.pendingDeposits) || 0)}
                                         </div>
                                       )}
                                     </div>
@@ -1675,20 +1840,20 @@ export default function DashboardPage() {
                             <div className="flex justify-between items-center text-sm">
                               <span className="text-gray-600">💰 Sales:</span>
                               <div className="text-right">
-                                <div className="font-bold text-gray-900">{formatCurrency(period.sales)}</div>
+                                <div className="font-bold text-gray-900">{formatCurrency(Number(period.sales) || 0)}</div>
                                 {typeof period.dailySalesAllocations === 'number' && Math.abs(period.dailySalesAllocations - period.sales) > 0.5 && (
-                                  <div className="text-xs text-gray-500">Alloc: {formatCurrency(period.dailySalesAllocations)}</div>
+                                  <div className="text-xs text-gray-500">Alloc: {formatCurrency(Number(period.dailySalesAllocations) || 0)}</div>
                                 )}
                               </div>
                             </div>
                             <div className="flex justify-between items-center text-sm">
                               <span className="text-gray-600">✅ Approved:</span>
-                              <span className="font-semibold text-blue-700">{formatCurrency(period.approvedDeposits)}</span>
+                              <span className="font-semibold text-blue-700">{formatCurrency(Number(period.approvedDeposits) || 0)}</span>
                             </div>
                             {period.pendingDeposits > 0 && (
                               <div className="flex justify-between items-center text-sm">
                                 <span className="text-gray-600">⏳ Pending:</span>
-                                <span className="font-semibold text-yellow-600">{formatCurrency(period.pendingDeposits)}</span>
+                                <span className="font-semibold text-yellow-600">{formatCurrency(Number(period.pendingDeposits) || 0)}</span>
                               </div>
                             )}
                             
@@ -1696,7 +1861,7 @@ export default function DashboardPage() {
                               <div className="flex justify-between items-center">
                                 <span className="text-sm font-bold text-gray-700">Current Gap:</span>
                                 <span className={`text-lg font-bold ${period.gap > 0 ? 'text-red-600' : 'text-green-600'}`}>
-                                  {period.gap > 0 ? '⚠️ ' : '✅ '}{formatCurrency(Math.abs(period.gap))}
+                                  {period.gap > 0 ? '⚠️ ' : '✅ '}{formatCurrency(Math.abs(Number(period.gap)) || 0)}
                                 </span>
                               </div>
                               {period.pendingDeposits > 0 && (
@@ -1704,7 +1869,7 @@ export default function DashboardPage() {
                                   <span className="text-gray-600">If pending approved:</span>
                                   <span className={`font-semibold ${period.gapAfterPending > 0 ? 'text-yellow-600' : 'text-green-600'}`}>
                                     {period.gapAfterPending > 0 
-                                      ? `⚠️ Still ${formatCurrency(period.gapAfterPending)} missing` 
+                                      ? `⚠️ Still ${formatCurrency(Number(period.gapAfterPending) || 0)} missing` 
                                       : '✅ Fully covered'}
                                   </span>
                                 </div>
@@ -1829,9 +1994,9 @@ export default function DashboardPage() {
                             {pageItems.map(ms => (
                               <tr key={ms.payment_method_id} className="border-t">
                                 <td className="px-2 py-2">{ms.name}</td>
-                                <td className="px-2 py-2 text-right">{formatCurrency(ms.netInvoices)}</td>
-                                <td className="px-2 py-2 text-right">{formatCurrency(ms.approvedAlloc)}</td>
-                                <td className="px-2 py-2 text-right">{formatCurrency(ms.pendingAmt)}</td>
+                                <td className="px-2 py-2 text-right">{formatCurrency(Number(ms.netInvoices) || 0)}</td>
+                                <td className="px-2 py-2 text-right">{formatCurrency(Number(ms.approvedAlloc) || 0)}</td>
+                                <td className="px-2 py-2 text-right">{formatCurrency(Number(ms.pendingAmt) || 0)}</td>
                                 <td className="px-2 py-2 text-right">
                                   {ms.gap === 0 ? (
                                     <span className="text-green-600 font-semibold">✅ {formatCurrency(Math.abs(ms.gap))}</span>

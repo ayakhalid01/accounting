@@ -182,7 +182,8 @@ CREATE OR REPLACE FUNCTION calculate_gap_in_period(
   p_start_date DATE,
   p_end_date DATE,
   p_payment_method_id UUID DEFAULT NULL,
-  p_exclude_deposit_id UUID DEFAULT NULL
+  p_exclude_deposit_id UUID DEFAULT NULL,
+  p_use_latest BOOLEAN DEFAULT TRUE
 )
 RETURNS NUMERIC
 LANGUAGE plpgsql
@@ -190,6 +191,7 @@ SECURITY INVOKER
 AS $$
 DECLARE
   v_total_sales NUMERIC := 0;
+  v_approved_deposits NUMERIC := 0;
   v_gap NUMERIC := 0;
 BEGIN
   -- Calculate total sales (invoices - credits) in period
@@ -211,12 +213,24 @@ BEGIN
       AND sale_order_date BETWEEN p_start_date AND p_end_date
       AND (p_payment_method_id IS NULL OR payment_method_id = p_payment_method_id)
   ) c;
-  
-  RETURN GREATEST(0, v_total_sales);
+
+  -- Sum approved deposits overlapping the period (exclude optional deposit)
+  SELECT COALESCE(SUM(d.net_amount), 0)
+  INTO v_approved_deposits
+  FROM deposits d
+  WHERE d.status = 'approved'
+    AND d.start_date <= p_end_date
+    AND d.end_date >= p_start_date
+    AND (p_payment_method_id IS NULL OR d.payment_method_id = p_payment_method_id)
+    AND (p_exclude_deposit_id IS NULL OR d.id != p_exclude_deposit_id);
+
+  v_gap := GREATEST(0, v_total_sales - v_approved_deposits);
+
+  RETURN v_gap;
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION calculate_gap_in_period(DATE, DATE, UUID, UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION calculate_gap_in_period(DATE, DATE, UUID, UUID, BOOLEAN) TO authenticated;
 
 -- 5. Create trigger function for deposit approval
 CREATE OR REPLACE FUNCTION calculate_deposit_allocation()
@@ -237,7 +251,8 @@ BEGIN
       NEW.start_date,
       NEW.end_date,
       NEW.payment_method_id,
-      NEW.id
+      NEW.id,
+      TRUE
     );
     
     -- How much can this deposit cover?
