@@ -6,14 +6,32 @@ import { DepositFileData } from '@/types';
  */
 export async function parseDepositFile(file: File): Promise<DepositFileData> {
   try {
+    console.log(`📁 [FILE_PARSER] Starting to parse file: ${file.name} (${file.size} bytes, type: ${file.type})`);
+    
     const buffer = await file.arrayBuffer();
     
     let workbook;
+    let fileType = 'unknown';
+    
     if (file.name.endsWith('.csv')) {
+      fileType = 'CSV';
+      console.log(`📄 [FILE_PARSER] Detected CSV file, parsing as text...`);
       // Parse CSV
       const text = new TextDecoder().decode(buffer);
       workbook = XLSX.read(text, { type: 'string' });
+    } else if (file.name.endsWith('.xlsx')) {
+      fileType = 'Excel (.xlsx)';
+      console.log(`📊 [FILE_PARSER] Detected Excel .xlsx file, parsing as binary...`);
+      // Parse Excel
+      workbook = XLSX.read(buffer, { type: 'array' });
+    } else if (file.name.endsWith('.xls')) {
+      fileType = 'Excel (.xls)';
+      console.log(`📊 [FILE_PARSER] Detected Excel .xls file, parsing as binary...`);
+      // Parse Excel
+      workbook = XLSX.read(buffer, { type: 'array' });
     } else {
+      fileType = 'Excel (other)';
+      console.log(`📊 [FILE_PARSER] Detected Excel file (unknown extension), parsing as binary...`);
       // Parse Excel
       workbook = XLSX.read(buffer, { type: 'array' });
     }
@@ -23,22 +41,51 @@ export async function parseDepositFile(file: File): Promise<DepositFileData> {
       throw new Error('No sheets found in file');
     }
 
+    console.log(`📋 [FILE_PARSER] Processing sheet: "${sheetName}" (${workbook.SheetNames.length} total sheets)`);
+
     const sheet = workbook.Sheets[sheetName];
-    const jsonData = XLSX.utils.sheet_to_json(sheet) as Record<string, any>[];
+    
+    // First, try to parse with the first row as headers
+    let jsonData = XLSX.utils.sheet_to_json(sheet) as Record<string, any>[];
+    console.log(`📊 [FILE_PARSER] Parsed ${jsonData.length} rows from ${fileType} file`);
 
     if (jsonData.length === 0) {
       throw new Error('No data found in file');
     }
 
-    const columns = Object.keys(jsonData[0] || {});
+    let columns = Object.keys(jsonData[0] || {});
+    console.log(`🏷️ [FILE_PARSER] Initial columns detected: ${columns.length} (${columns.join(', ')})`);
+    
+    let allColumnsEmpty = columns.length > 0 && columns.every(col => col.startsWith('__EMPTY') || col.startsWith('_EMPTY'));
+
+    // If all columns in the first row are "_EMPTY" or "__EMPTY", skip the first row and use the second row as headers
+    if (allColumnsEmpty && jsonData.length > 1) {
+      console.log('🔄 [FILE_PARSER] First row contains all empty headers, skipping to second row...');
+      // Re-parse starting from row 1 (second row as header)
+      jsonData = XLSX.utils.sheet_to_json(sheet, { range: 1 }) as Record<string, any>[];
+      console.log(`📊 [FILE_PARSER] Re-parsed with second row as headers: ${jsonData.length} rows`);
+      
+      if (jsonData.length === 0) {
+        throw new Error('No data found in file after skipping first row');
+      }
+      
+      columns = Object.keys(jsonData[0] || {});
+      console.log(`🏷️ [FILE_PARSER] New columns after skipping first row: ${columns.length} (${columns.join(', ')})`);
+    }
+
+    // Filter out XLSX-generated empty column names like "__EMPTY", "_EMPTY", "__EMPTY_1", "_EMPTY_1", etc.
+    const filteredColumns = columns.filter(col => !col.startsWith('__EMPTY') && !col.startsWith('_EMPTY'));
+    console.log(`🧹 [FILE_PARSER] Filtered out ${columns.length - filteredColumns.length} empty columns, remaining: ${filteredColumns.length} (${filteredColumns.join(', ')})`);
+
+    console.log(`✅ [FILE_PARSER] Successfully parsed ${fileType} file: ${filteredColumns.length} columns, ${jsonData.length} rows`);
 
     return {
-      columns,
+      columns: filteredColumns,
       rows: jsonData,
       rowCount: jsonData.length
     };
   } catch (error) {
-    console.error('❌ [FILE_PARSER] Error parsing file:', error);
+    console.error(`❌ [FILE_PARSER] Error parsing file ${file?.name || 'unknown'}:`, error);
     throw new Error(`Failed to parse file: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
 }
@@ -94,8 +141,10 @@ export function filterRowsByColumn(
  */
 export function sumColumn(rows: Record<string, any>[], columnName: string): number {
   return rows.reduce((sum, row) => {
-    const value = parseFloat(String(row[columnName] || 0));
-    return sum + (isNaN(value) ? 0 : value);
+    const value = row[columnName];
+    // Handle both string and numeric values
+    const numericValue = typeof value === 'number' ? value : parseFloat(String(value || 0));
+    return sum + (isNaN(numericValue) ? 0 : numericValue);
   }, 0);
 }
 
@@ -110,8 +159,17 @@ export function calculateDepositTotals(
   taxValue?: number,
   taxColumnName?: string
 ) {
-  const totalAmount = sumColumn(rows, amountColumnName);
-  const totalRefunds = refundColumnName ? sumColumn(rows, refundColumnName) : 0;
+  // Convert amount and refund columns to numbers
+  let processedRows = convertAmountColumnToNumbers(rows, amountColumnName, 'Amount');
+  if (refundColumnName) {
+    processedRows = convertAmountColumnToNumbers(processedRows, refundColumnName, 'Refund');
+  }
+  if (taxColumnName && (taxMethod === 'column_based')) {
+    processedRows = convertAmountColumnToNumbers(processedRows, taxColumnName, 'Tax');
+  }
+
+  const totalAmount = sumColumn(processedRows, amountColumnName);
+  const totalRefunds = refundColumnName ? sumColumn(processedRows, refundColumnName) : 0;
   const netAmount = totalAmount - totalRefunds;
 
   let taxAmount = 0;
@@ -137,17 +195,44 @@ export function calculateDepositTotals(
 }
 
 /**
- * Check if column is numeric
+ * Convert amount column values to numbers with logging
  */
-export function isNumericColumn(rows: Record<string, any>[], columnName: string): boolean {
-  if (rows.length === 0) return false;
-
-  // Check first 10 rows
-  const checkRows = rows.slice(0, Math.min(10, rows.length));
+export function convertAmountColumnToNumbers(rows: Record<string, any>[], columnName: string, label: string = 'Amount'): Record<string, any>[] {
+  console.log(`🔢 [AMOUNT_CONVERT] Converting ${label} column "${columnName}" to numbers for ${rows.length} rows`);
   
-  return checkRows.every(row => {
-    const value = row[columnName];
-    if (value === null || value === undefined || value === '') return true; // Allow empty values
-    return !isNaN(parseFloat(String(value)));
+  let convertedCount = 0;
+  let skippedCount = 0;
+  let errorCount = 0;
+  
+  const convertedRows = rows.map((row, index) => {
+    const originalValue = row[columnName];
+    const stringValue = String(originalValue || '').trim();
+    
+    if (stringValue === '' || stringValue === '0') {
+      // Empty or zero values remain as 0
+      row[columnName] = 0;
+      skippedCount++;
+      return row;
+    }
+    
+    const numericValue = parseFloat(stringValue);
+    
+    if (isNaN(numericValue)) {
+      console.warn(`⚠️ [AMOUNT_CONVERT] Row ${index + 1}: Invalid ${label} value "${originalValue}" -> 0`);
+      row[columnName] = 0;
+      errorCount++;
+    } else {
+      if (originalValue !== numericValue) {
+        console.log(`🔄 [AMOUNT_CONVERT] Row ${index + 1}: "${originalValue}" -> ${numericValue}`);
+      }
+      row[columnName] = numericValue;
+      convertedCount++;
+    }
+    
+    return row;
   });
+  
+  console.log(`✅ [AMOUNT_CONVERT] ${label} conversion complete: ${convertedCount} converted, ${skippedCount} skipped, ${errorCount} errors`);
+  
+  return convertedRows;
 }

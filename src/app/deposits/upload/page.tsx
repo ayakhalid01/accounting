@@ -10,8 +10,7 @@ import {
   parseDepositFile,
   getDistinctValues,
   filterRowsByColumn,
-  calculateDepositTotals,
-  isNumericColumn
+  calculateDepositTotals
 } from '@/lib/parsers/depositParser';
 import { DepositFileData, DepositSettings, PaymentMethod } from '@/types';
 import { Upload, Calendar, DollarSign, Settings, Check, AlertCircle } from 'lucide-react';
@@ -150,8 +149,31 @@ export default function DepositUploadPage() {
     }
 
     // Filter rows
-    let filteredRows = filterRowsByColumn(
-      fileData.rows,
+    let filteredRows = fileData.rows;
+
+    // Skip rows where all selected columns (amount, refund, filter) are empty
+    const initialRowCount = filteredRows.length;
+    filteredRows = filteredRows.filter((row: any) => {
+      const amountValue = row[columns.amountColumn];
+      const refundValue = columns.refundColumn ? row[columns.refundColumn] : null;
+      const filterValue = columns.filterColumn ? row[columns.filterColumn] : null;
+      
+      // Check if all selected columns are empty (null, undefined, or empty string)
+      const isAmountEmpty = amountValue == null || amountValue === '';
+      const isRefundEmpty = refundValue == null || refundValue === '';
+      const isFilterEmpty = filterValue == null || filterValue === '';
+      
+      // Keep row only if at least one selected column has a value
+      return !(isAmountEmpty && isRefundEmpty && isFilterEmpty);
+    });
+    const skippedRows = initialRowCount - filteredRows.length;
+    if (skippedRows > 0) {
+      console.log(`🗑️ [UPLOAD_DEPOSIT_CALC] Skipped ${skippedRows} empty rows, ${filteredRows.length} rows remaining`);
+    }
+
+    // Apply filter column filtering
+    filteredRows = filterRowsByColumn(
+      filteredRows,
       columns.filterColumn,
       columns.filterValues
     );

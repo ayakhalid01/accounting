@@ -30,6 +30,7 @@ DECLARE
   v_allowed_for_day NUMERIC := 0; -- temporary cap per day
   v_allocated_total NUMERIC := 0; -- totals per method for this deposit (used for logging)
   v_gap_total NUMERIC := 0; -- totals per method gap for this deposit (used for logging)
+  v_method_remaining_gap NUMERIC := 0; -- how much gap this method still has
 BEGIN
   -- Get deposit details including created_at and method_group for FIFO comparison
   SELECT 
@@ -198,12 +199,27 @@ BEGIN
       -- Calculate remaining gap after older deposits and prior methods
       v_remaining_gap := GREATEST(0, v_daily_sales - v_older_deposits_used - v_allocated_by_prior_methods);
       
-      -- Cap day's remaining gap by the method's remaining uncovered gap (do not allocate more than v_method_gap_total)
-      v_allowed_for_day := LEAST(v_remaining_gap, GREATEST(0, v_method_gap_total - v_method_allocated_so_far));
+      -- For method groups, methods should be processed sequentially
+      -- Each method gets priority allocation until its total gap is filled
+      IF v_deposit_balance > 0 THEN
+        -- Calculate how much gap this method still has in total
+        v_method_remaining_gap := GREATEST(0, v_method_gap_total - v_method_allocated_so_far);
 
-      -- This deposit covers as much of the allowed_for_day as possible, but not more than deposit balance
-      v_allocated := LEAST(v_deposit_balance, v_allowed_for_day);
-      v_gap := GREATEST(0, v_remaining_gap - v_allocated);
+        IF v_method_remaining_gap > 0 THEN
+          -- This method can take up to its remaining total gap or remaining deposit balance
+          v_allocated := LEAST(v_deposit_balance, v_method_remaining_gap);
+          -- But still respect the daily sales constraint (can't allocate more than day's sales)
+          v_allocated := LEAST(v_allocated, v_daily_sales - v_older_deposits_used);
+        ELSE
+          -- This method's total gap is filled, skip allocation for this day
+          v_allocated := 0;
+        END IF;
+      ELSE
+        -- No deposit balance remaining
+        v_allocated := 0;
+      END IF;
+      -- For sequential method groups, daily_gap should be calculated as remaining gap after this method's allocation
+      v_gap := GREATEST(0, v_daily_sales - v_older_deposits_used - v_allocated);
       -- Insert allocation record for this method
       INSERT INTO deposit_allocations (
         deposit_id,

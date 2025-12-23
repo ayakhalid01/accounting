@@ -8,7 +8,8 @@ import {
   getDistinctValues,
   filterRowsByColumn,
   calculateDepositTotals,
-  isNumericColumn
+  isNumericColumn,
+  convertAmountColumnToNumbers
 } from '@/lib/parsers/depositParser';
 import { DepositFileData, DepositSettings, PaymentMethod } from '@/types';
 import { Upload, Calendar, DollarSign, Settings, Check, AlertCircle, ChevronDown, ChevronUp, X } from 'lucide-react';
@@ -245,9 +246,29 @@ export default function AdminDepositForm({ onClose, onSuccess, currentUserId }: 
     try {
       let filteredRows = fileData.rows;
       
+      // Skip rows where all selected columns (amount, refund, filter) are empty
+      const initialRowCount = filteredRows.length;
+      filteredRows = filteredRows.filter((row: any) => {
+        const amountValue = row[columns.amountColumn!];
+        const refundValue = columns.refundColumn ? row[columns.refundColumn] : null;
+        const filterValue = columns.filterColumn ? row[columns.filterColumn] : null;
+        
+        // Check if all selected columns are empty (null, undefined, or empty string)
+        const isAmountEmpty = amountValue == null || amountValue === '';
+        const isRefundEmpty = refundValue == null || refundValue === '';
+        const isFilterEmpty = filterValue == null || filterValue === '';
+        
+        // Keep row only if at least one selected column has a value
+        return !(isAmountEmpty && isRefundEmpty && isFilterEmpty);
+      });
+      const skippedRows = initialRowCount - filteredRows.length;
+      if (skippedRows > 0) {
+        console.log(`🗑️ [DEPOSIT_CALC] Skipped ${skippedRows} empty rows, ${filteredRows.length} rows remaining`);
+      }
+      
       // Always apply filter if column is selected (even if values are empty)
       if (columns.filterColumn) {
-        filteredRows = filterRowsByColumn(fileData.rows, columns.filterColumn, columns.filterValues);
+        filteredRows = filterRowsByColumn(filteredRows, columns.filterColumn, columns.filterValues);
       }
       
       // DEBUG: Log settings
@@ -273,13 +294,21 @@ export default function AdminDepositForm({ onClose, onSuccess, currentUserId }: 
 
       console.log('Tax config to use:', taxConfig);
 
+      // Convert amount and refund columns to numbers
+      if (columns.amountColumn) {
+        filteredRows = convertAmountColumnToNumbers(filteredRows, columns.amountColumn, 'Amount');
+      }
+      if (columns.refundColumn) {
+        filteredRows = convertAmountColumnToNumbers(filteredRows, columns.refundColumn, 'Refund');
+      }
+
       // Calculate totals
       let totalAmount = 0;
       let refundsAmount = 0;
 
       filteredRows.forEach((row: any) => {
-        const amount = parseFloat(row[columns.amountColumn!] || 0);
-        const refund = columns.refundColumn ? parseFloat(row[columns.refundColumn] || 0) : 0;
+        const amount = row[columns.amountColumn!] || 0;
+        const refund = columns.refundColumn ? (row[columns.refundColumn] || 0) : 0;
         totalAmount += amount;
         refundsAmount += refund;
       });
@@ -570,11 +599,11 @@ export default function AdminDepositForm({ onClose, onSuccess, currentUserId }: 
             
             <div>
               <label className="block text-sm font-semibold mb-2">
-                Upload File (Excel or CSV) *
+                Upload File (Excel (.xlsx, .xls) or CSV) *
               </label>
               <input
                 type="file"
-                accept=".xlsx,.csv"
+                accept=".xlsx,.xls,.csv"
                 onChange={handleFileChange}
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
