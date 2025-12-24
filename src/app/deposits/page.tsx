@@ -97,6 +97,9 @@ export default function DepositsPage() {
   const [filterStatus, setFilterStatus] = useState<'all' | 'pending' | 'approved' | 'rejected'>(savedFilters?.filterStatus || 'all');
   const [filterPaymentMethod, setFilterPaymentMethod] = useState(savedFilters?.filterPaymentMethod || 'all');
   const [filterUploadedBy, setFilterUploadedBy] = useState(savedFilters?.filterUploadedBy || 'all');
+
+  // Persistent Notes
+  const [persistentNotes, setPersistentNotes] = useState('');
   
   // ============================================
   // Save Filters to localStorage
@@ -192,6 +195,45 @@ export default function DepositsPage() {
     }
   };
 
+  const loadPersistentNotes = async () => {
+    try {
+      const { data, error } = await supabase.rpc('get_user_note', {
+        p_note_type: 'deposits',
+        p_note_key: 'general'
+      });
+
+      if (error) {
+        console.warn('Could not load persistent notes from database:', error);
+        return;
+      }
+
+      if (data) {
+        setPersistentNotes(data);
+        console.log('📝 Loaded persistent notes from database');
+      }
+    } catch (err: any) {
+      console.warn('Error loading persistent notes:', err);
+    }
+  };
+
+  const savePersistentNotes = async () => {
+    try {
+      const { error } = await supabase.rpc('upsert_user_note', {
+        p_note_type: 'deposits',
+        p_note_key: 'general',
+        p_content: persistentNotes
+      });
+
+      if (error) {
+        console.warn('Could not save persistent notes to database:', error);
+      } else {
+        console.log('💾 Saved persistent notes to database');
+      }
+    } catch (err: any) {
+      console.warn('Error saving persistent notes:', err);
+    }
+  };
+
   useEffect(() => {
     applyFilters();
   }, [deposits, filterStartDate, filterEndDate, filterStatus, filterPaymentMethod, filterUploadedBy]);
@@ -209,6 +251,18 @@ export default function DepositsPage() {
       console.warn('Could not load allocation preview from localStorage:', e);
     }
   }, []);
+
+  // Load persistent notes from database on mount
+  useEffect(() => {
+    loadPersistentNotes();
+  }, []);
+
+  // Save persistent notes to database whenever they change
+  useEffect(() => {
+    if (persistentNotes !== undefined) {
+      savePersistentNotes();
+    }
+  }, [persistentNotes]);
 
   // Auto-preview pending deposits in the current filtered set so the previews "always exist" while pending
   useEffect(() => {
@@ -1322,6 +1376,25 @@ export default function DepositsPage() {
           >
             Clear Filters
           </button>
+        </div>
+
+        {/* Persistent Notes Section */}
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">
+          <div className="flex items-center gap-2 mb-4">
+            <FileText className="h-5 w-5 text-gray-600" />
+            <h2 className="text-lg font-semibold text-gray-900">Notes</h2>
+            <span className="text-xs text-green-600 bg-green-100 px-2 py-1 rounded">Cloud Saved</span>
+          </div>
+          <textarea
+            value={persistentNotes}
+            onChange={(e) => setPersistentNotes(e.target.value)}
+            rows={6}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 resize-vertical"
+            placeholder="Add your notes here... They will be saved to the cloud and available on all your devices."
+          />
+          <div className="mt-2 text-xs text-gray-500">
+            ☁️ Your notes are automatically saved to the cloud and will be available on all your devices.
+          </div>
         </div>
 
         {/* New Deposit Form - User or Admin */}

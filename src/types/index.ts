@@ -299,10 +299,20 @@ export interface DepositSettings {
   updated_at: string;
 }
 
-export interface DepositFileData {
-  columns: string[];
-  rows: Record<string, any>[];
-  rowCount: number;
+export interface DepositSettings {
+  id?: string;
+  payment_method_id: string;
+  filter_column_name?: string;
+  filter_include_values?: string[];
+  amount_column_name: string;
+  refund_column_name?: string;
+  tax_enabled: boolean;
+  tax_method: 'fixed_percent' | 'fixed_amount' | 'column_based' | 'none';
+  tax_value?: number;
+  tax_column_name?: string;
+  header_row_index?: number;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface DepositCalculation {

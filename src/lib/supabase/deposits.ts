@@ -39,6 +39,11 @@ export async function loadDepositSettings(paymentMethodId: string): Promise<Depo
       appSettings.filter_include_values = data.filter_values;
     }
 
+    // Copy header_row_index as-is (no mapping needed)
+    if (data.header_row_index !== undefined) {
+      appSettings.header_row_index = data.header_row_index;
+    }
+
     return appSettings;
   } catch (error) {
     console.error('❌ [DEPOSIT_SETTINGS] Exception:', error);
@@ -158,6 +163,11 @@ export async function saveDepositSettings(
     }
     if (settings.tax_value !== undefined) {
       dbSettings.tax_value = settings.tax_value;
+    }
+
+    // Copy header row index
+    if (settings.header_row_index !== undefined) {
+      dbSettings.header_row_index = settings.header_row_index;
     }
     
     // Map UI tax method names to DB tax method names

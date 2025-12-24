@@ -35,7 +35,8 @@ export default function DepositSettingsPage() {
     tax_enabled: false,
     tax_method: 'none',
     tax_value: undefined,
-    tax_column_name: ''
+    tax_column_name: '',
+    header_row_index: 0
   });
 
   const [newFilterValue, setNewFilterValue] = useState('');
@@ -145,7 +146,8 @@ export default function DepositSettingsPage() {
         tax_enabled: existingSettings.tax_enabled,
         tax_method,
         tax_value: existingSettings.tax_value,
-        tax_column_name: existingSettings.tax_column_name || ''
+        tax_column_name: existingSettings.tax_column_name || '',
+        header_row_index: existingSettings.header_row_index || 0
       });
     } else {
       setForm({
@@ -157,7 +159,8 @@ export default function DepositSettingsPage() {
         tax_enabled: false,
         tax_method: 'none',
         tax_value: undefined,
-        tax_column_name: ''
+        tax_column_name: '',
+        header_row_index: 0
       });
     }
   };
@@ -250,7 +253,8 @@ export default function DepositSettingsPage() {
         tax_enabled: form.tax_enabled,
         tax_method,
         tax_value,
-        tax_column_name
+        tax_column_name,
+        header_row_index: form.header_row_index
       });
 
       // Update local state
@@ -300,6 +304,7 @@ export default function DepositSettingsPage() {
       const headers = [
         'payment_method_id',
         'payment_method_name',
+        'header_row_index',
         'filter_column',
         'amount_column',
         'refund_column',
@@ -319,6 +324,9 @@ export default function DepositSettingsPage() {
           switch (h) {
             case 'payment_method_name':
               val = s.payment_method_name || (s.payment_method_id ? (pmById.get(s.payment_method_id)?.name_en) : '') || '';
+              break;
+            case 'header_row_index':
+              val = s.header_row_index ?? 0;
               break;
             case 'filter_values':
               val = Array.isArray(s.filter_include_values) ? s.filter_include_values.join('|') : (Array.isArray(s.filter_values) ? s.filter_values.join('|') : '');
@@ -455,7 +463,8 @@ export default function DepositSettingsPage() {
             tax_enabled: item.tax_enabled,
             tax_method: item.tax_method || undefined,
             tax_value: item.tax_value ? Number(item.tax_value) : undefined,
-            tax_column_name: item.tax_column || item.tax_column_name || undefined
+            tax_column_name: item.tax_column || item.tax_column_name || undefined,
+            header_row_index: item.header_row_index ? Number(item.header_row_index) : 0
           };
 
           // Parse booleans and numbers robustly (accept TRUE/True/true, Yes/1 etc.)
@@ -550,7 +559,8 @@ export default function DepositSettingsPage() {
           tax_enabled: !!item.tax_enabled,
           tax_method,
           tax_value: item.tax_value ?? undefined,
-          tax_column_name: item.tax_column_name ?? item.tax_column ?? undefined
+          tax_column_name: item.tax_column_name ?? item.tax_column ?? undefined,
+          header_row_index: item.header_row_index ? Number(item.header_row_index) : 0
         };
 
         try {
@@ -737,6 +747,21 @@ export default function DepositSettingsPage() {
                   <h3 className="text-base font-semibold mb-4 text-gray-900">Column Mapping</h3>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    {/* Header Row Index */}
+                    <div>
+                      <label className="block text-sm font-medium mb-2">Header Row Index</label>
+                      <input
+                        type="number"
+                        min="0"
+                        max="100"
+                        value={form.header_row_index || 0}
+                        onChange={(e) => setForm(prev => ({ ...prev, header_row_index: parseInt(e.target.value) || 0 }))}
+                        placeholder="0"
+                        className="w-full px-3 py-2 rounded-lg border border-gray-300 bg-white"
+                      />
+                      <p className="text-xs text-gray-500 mt-1">Which row contains column headers (0 = first row)</p>
+                    </div>
+
                     {/* Filter Column */}
                     <div>
                       <label className="block text-sm font-medium mb-2">Filter Column (Optional)</label>
@@ -991,6 +1016,7 @@ export default function DepositSettingsPage() {
               <thead className="bg-gray-50">
                 <tr>
                   <th className="px-6 py-3 text-left text-sm font-medium text-gray-700">Payment Method</th>
+                  <th className="px-6 py-3 text-left text-sm font-medium text-gray-700">Header Row Index</th>
                   <th className="px-6 py-3 text-left text-sm font-medium text-gray-700">Filter Column</th>
                   <th className="px-6 py-3 text-left text-sm font-medium text-gray-700">Amount Column</th>
                   <th className="px-6 py-3 text-left text-sm font-medium text-gray-700">Refund Column</th>
@@ -1010,6 +1036,7 @@ export default function DepositSettingsPage() {
                   return (
                     <tr key={method.id} className="hover:bg-gray-50 cursor-pointer" onClick={() => handleSelectMethod(method.id)}>
                       <td className="px-6 py-3 text-sm font-medium">{method.name_en}</td>
+                      <td className="px-6 py-3 text-sm text-gray-600">{settings?.header_row_index ?? 0}</td>
                       <td className="px-6 py-3 text-sm text-gray-600">{settings?.filter_column_name || '-'}</td>
                       <td className="px-6 py-3 text-sm text-gray-600">{settings?.amount_column_name || '-'}</td>
                       <td className="px-6 py-3 text-sm text-gray-600">{settings?.refund_column_name || '-'}</td>

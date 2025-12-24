@@ -226,6 +226,7 @@ export default function DashboardPage() {
       }).sort((a,b) => b.netInvoices - a.netInvoices);
 
       setMethodSummaries(summaries);
+      updateCacheWithMethodSummaries(summaries);
     } finally {
       setLoadingMethodSummaries(false);
     }
@@ -402,6 +403,22 @@ export default function DashboardPage() {
   // Cache key helper
   const makeDashboardCacheKey = (s: string, e: string, m: string, pt: PeriodType) => `dashboard:${s}:${e}:${m}:${pt}`;
 
+  // Helper to update cache with method summaries
+  const updateCacheWithMethodSummaries = (summaries: any[]) => {
+    try {
+      const cacheKey = makeDashboardCacheKey(appliedStartDate, appliedEndDate, appliedMethod, appliedPeriodType);
+      const existingCache = getCache<any>(cacheKey);
+      if (existingCache) {
+        setCache(cacheKey, {
+          ...existingCache,
+          methodSummaries: summaries
+        });
+      }
+    } catch (cacheErr) {
+      console.warn('Failed to update method summaries in cache', cacheErr);
+    }
+  };
+
   useEffect(() => {
     if (appliedStartDate && appliedEndDate) {
       const cacheKey = makeDashboardCacheKey(appliedStartDate, appliedEndDate, appliedMethod, appliedPeriodType);
@@ -546,6 +563,7 @@ export default function DashboardPage() {
             gap: Number(m.gap || 0)
           }));
           setMethodSummaries(summaries);
+          updateCacheWithMethodSummaries(summaries);
         } else {
           // Fallback to client-side computation (if RPC returns no rows)
           computeMethodSummaries(invoices || [], credits || [], allocations || [], deposits || []);
@@ -874,6 +892,9 @@ export default function DashboardPage() {
             gap: Number(m.gap || 0)
           }));
           setMethodSummaries(summaries);
+          
+          // Update cache with new method summaries
+          updateCacheWithMethodSummaries(summaries);
         } else {
           // Fallback to client-side computation (if RPC returns no rows)
           computeMethodSummaries(invoices || [], credits || [], allocations || [], deposits || []);
@@ -1636,49 +1657,85 @@ export default function DashboardPage() {
         <div className="bg-white shadow rounded-lg p-6 mb-8">
           <h3 className="text-lg font-medium text-gray-900 mb-6">Sales vs Deposits Comparison</h3>
           {loading ? (
-            // Chart skeleton while loading
-            <div className="overflow-x-auto">
-              <div className="min-w-[600px]">
-                <div className="flex justify-center gap-6 mb-6 animate-pulse">
-                  <div className="w-24 h-4 bg-gray-200 rounded"></div>
-                  <div className="w-36 h-4 bg-gray-200 rounded"></div>
-                  <div className="w-28 h-4 bg-gray-200 rounded"></div>
+            // Improved chart skeleton
+            <div className="space-y-6 animate-pulse">
+              {/* Legend skeleton */}
+              <div className="flex justify-center gap-6">
+                <div className="flex items-center gap-2">
+                  <div className="w-4 h-4 bg-gray-200 rounded"></div>
+                  <div className="h-4 bg-gray-200 rounded w-24"></div>
                 </div>
-                <div className="relative" style={{ height: '450px' }}>
-                  <div className="overflow-x-auto max-w-full">
-                    <div className="relative" style={{ height: '450px', width: '100%' }}>
-                      <div className="absolute left-0 top-0 bottom-12 flex flex-col justify-between text-xs text-gray-200 pr-2">
-                        {[5, 4, 3, 2, 1, 0].map(i => (
-                          <div key={i} className="h-4 bg-gray-200 rounded w-12 mb-2"></div>
-                        ))}
+                <div className="flex items-center gap-2">
+                  <div className="w-4 h-4 bg-gray-200 rounded"></div>
+                  <div className="h-4 bg-gray-200 rounded w-32"></div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="w-4 h-4 bg-gray-200 rounded"></div>
+                  <div className="h-4 bg-gray-200 rounded w-28"></div>
+                </div>
+              </div>
+              
+              {/* Chart area skeleton */}
+              <div className="relative" style={{ height: '450px' }}>
+                {/* Y-axis labels */}
+                <div className="absolute left-0 top-0 bottom-12 flex flex-col justify-between text-xs pr-2">
+                  {[5, 4, 3, 2, 1, 0].map(i => (
+                    <div key={i} className="h-4 bg-gray-200 rounded w-12"></div>
+                  ))}
+                </div>
+                
+                {/* Chart bars */}
+                <div className="absolute left-20 right-0 top-0 bottom-12 px-2">
+                  <div className="relative h-full flex items-end gap-2">
+                    {Array.from({ length: 8 }).map((_, idx) => (
+                      <div key={idx} className="flex-1 h-full flex items-end gap-0.5">
+                        {/* Sales bar */}
+                        <div className="flex-1 bg-gray-200 rounded-t" style={{ height: `${25 + (idx % 3) * 15}%` }} />
+                        {/* Approved bar */}
+                        <div className="flex-1 bg-gray-300 rounded-t" style={{ height: `${20 + (idx % 4) * 10}%` }} />
+                        {/* Pending bar */}
+                        <div className="flex-1 bg-gray-200 rounded-t" style={{ height: `${10 + (idx % 2) * 5}%` }} />
                       </div>
-
-                      <div className="absolute left-20 right-0 top-0 bottom-12 flex flex-col justify-between">
-                        {[0, 1, 2, 3, 4, 5].map(i => (
-                          <div key={i} className="border-t border-gray-100"></div>
-                        ))}
+                    ))}
+                  </div>
+                </div>
+                
+                {/* X-axis labels */}
+                <div className="absolute left-20 right-0 bottom-0 flex items-center gap-2 px-2 h-12">
+                  {Array.from({ length: 8 }).map((_, i) => (
+                    <div key={i} className="flex-1 flex items-center justify-center">
+                      <div className="h-3 bg-gray-200 rounded w-16"></div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              
+              {/* Gap summary cards skeleton */}
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {Array.from({ length: 6 }).map((_, idx) => (
+                  <div key={idx} className="rounded-lg p-5 border-2 border-gray-200">
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="h-5 bg-gray-200 rounded w-20"></div>
+                      <div className="h-5 bg-gray-200 rounded w-16"></div>
+                    </div>
+                    <div className="space-y-2">
+                      <div className="flex justify-between items-center">
+                        <div className="h-4 bg-gray-200 rounded w-16"></div>
+                        <div className="h-4 bg-gray-200 rounded w-20"></div>
                       </div>
-
-                      <div className="absolute left-20 right-0 top-0 bottom-12 px-2">
-                        <div className="relative h-full flex items-end gap-2">
-                          {Array.from({ length: 8 }).map((_, idx) => (
-                            <div key={idx} className="flex-1 h-full flex items-end" style={{ minWidth: 60 }}>
-                              <div className="w-full bg-gray-200 rounded-t" style={{ height: `${20 + (idx % 4) * 10}%` }} />
-                            </div>
-                          ))}
+                      <div className="flex justify-between items-center">
+                        <div className="h-4 bg-gray-200 rounded w-20"></div>
+                        <div className="h-4 bg-gray-200 rounded w-16"></div>
+                      </div>
+                      <div className="pt-2 mt-2 border-t-2 border-gray-200">
+                        <div className="flex justify-between items-center">
+                          <div className="h-4 bg-gray-200 rounded w-24"></div>
+                          <div className="h-5 bg-gray-200 rounded w-20"></div>
                         </div>
-                      </div>
-
-                      <div className="absolute left-20 right-0 bottom-0 flex items-center gap-2 px-2 h-12" style={{ width: '100%' }}>
-                        {Array.from({ length: 8 }).map((_, i) => (
-                          <div key={i} className="flex items-center justify-center" style={{ width: 80, flexShrink: 0 }}>
-                            <div className="h-3 bg-gray-200 rounded w-20"></div>
-                          </div>
-                        ))}
                       </div>
                     </div>
                   </div>
-                </div>
+                ))}
               </div>
             </div>
           ) : periodComparisons.length > 0 ? (
@@ -2064,7 +2121,31 @@ export default function DashboardPage() {
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
-                {periodComparisons.length === 0 ? (
+                {loading ? (
+                  // Skeleton loading for comparison table
+                  Array.from({ length: 8 }).map((_, idx) => (
+                    <tr key={idx} className="animate-pulse">
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <div className="h-4 bg-gray-200 rounded w-24"></div>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-right">
+                        <div className="h-4 bg-gray-200 rounded w-20 ml-auto"></div>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-right">
+                        <div className="h-4 bg-gray-200 rounded w-16 ml-auto"></div>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-right">
+                        <div className="h-4 bg-gray-200 rounded w-16 ml-auto"></div>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-right">
+                        <div className="h-4 bg-gray-200 rounded w-18 ml-auto"></div>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-center">
+                        <div className="h-5 bg-gray-200 rounded w-16 mx-auto"></div>
+                      </td>
+                    </tr>
+                  ))
+                ) : periodComparisons.length === 0 ? (
                   <tr>
                     <td colSpan={6} className="px-6 py-8 text-center text-gray-500">
                       No data available

@@ -53,6 +53,7 @@ export default function AdminDepositForm({ onClose, onSuccess, currentUserId }: 
   // Column selection
   const [columns, setColumns] = useState<ColumnSelectState>({});
   const [distinctValues, setDistinctValues] = useState<Record<string, string[]>>({});
+  const [filterSearchTerm, setFilterSearchTerm] = useState<string>('');
   
   // Calculations
   const [calculation, setCalculation] = useState<any>(null);
@@ -875,8 +876,99 @@ export default function AdminDepositForm({ onClose, onSuccess, currentUserId }: 
                 <label className="block text-sm font-semibold mb-2">
                   Filter Values ({distinctValues[columns.filterColumn].length} available)
                 </label>
+                
+                {/* Select All checkbox */}
+                <div className="mb-2">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={
+                        (() => {
+                          const filteredValues = distinctValues[columns.filterColumn].filter((value) => 
+                            filterSearchTerm === '' || 
+                            value.toLowerCase().includes(filterSearchTerm.toLowerCase())
+                          );
+                          const currentlySelected = columns.filterValues || [];
+                          return filteredValues.length > 0 && filteredValues.every(value => currentlySelected.includes(value));
+                        })()
+                      }
+                      ref={(el) => {
+                        if (el) {
+                          const filteredValues = distinctValues[columns.filterColumn].filter((value) => 
+                            filterSearchTerm === '' || 
+                            value.toLowerCase().includes(filterSearchTerm.toLowerCase())
+                          );
+                          const currentlySelected = columns.filterValues || [];
+                          const allFilteredSelected = filteredValues.every(value => currentlySelected.includes(value));
+                          const someFilteredSelected = filteredValues.some(value => currentlySelected.includes(value));
+                          el.indeterminate = !allFilteredSelected && someFilteredSelected;
+                        }
+                      }}
+                      onChange={() => {
+                        const filteredValues = distinctValues[columns.filterColumn].filter((value) => 
+                          filterSearchTerm === '' || 
+                          value.toLowerCase().includes(filterSearchTerm.toLowerCase())
+                        );
+                        const currentlySelected = columns.filterValues || [];
+                        
+                        // Check if all filtered values are selected
+                        const allFilteredSelected = filteredValues.every(value => currentlySelected.includes(value));
+                        
+                        if (allFilteredSelected) {
+                          // Unselect all filtered values
+                          const newSelected = currentlySelected.filter(value => !filteredValues.includes(value));
+                          setColumns((prev) => ({
+                            ...prev,
+                            filterValues: newSelected
+                          }));
+                        } else {
+                          // Select all filtered values
+                          const newSelected = [...new Set([...currentlySelected, ...filteredValues])];
+                          setColumns((prev) => ({
+                            ...prev,
+                            filterValues: newSelected
+                          }));
+                        }
+                      }}
+                      className="w-4 h-4 rounded border-gray-300"
+                    />
+                    <span className="text-sm font-medium text-gray-700">
+                      {(() => {
+                        const filteredValues = distinctValues[columns.filterColumn].filter((value) => 
+                          filterSearchTerm === '' || 
+                          value.toLowerCase().includes(filterSearchTerm.toLowerCase())
+                        );
+                        const currentlySelected = columns.filterValues || [];
+                        const allFilteredSelected = filteredValues.every(value => currentlySelected.includes(value));
+                        
+                        return allFilteredSelected && filteredValues.length > 0
+                          ? `Unselect All (${filteredValues.length})`
+                          : currentlySelected.some(value => filteredValues.includes(value))
+                          ? `Select All (${filteredValues.length})`
+                          : `Select All (${filteredValues.length})`;
+                      })()}
+                    </span>
+                  </label>
+                </div>
+                
+                {/* Search bar */}
+                <div className="mb-2">
+                  <input
+                    type="text"
+                    placeholder="Search filter values..."
+                    value={filterSearchTerm}
+                    onChange={(e) => setFilterSearchTerm(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                
                 <div className="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto border border-gray-200 p-3 rounded">
-                  {distinctValues[columns.filterColumn].map((value) => (
+                  {distinctValues[columns.filterColumn]
+                    .filter((value) => 
+                      filterSearchTerm === '' || 
+                      value.toLowerCase().includes(filterSearchTerm.toLowerCase())
+                    )
+                    .map((value) => (
                     <label key={value} className="flex items-center gap-2 cursor-pointer">
                       <input
                         type="checkbox"

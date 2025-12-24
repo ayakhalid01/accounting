@@ -4,9 +4,9 @@ import { DepositFileData } from '@/types';
 /**
  * Parse Excel or CSV file and extract columns and data
  */
-export async function parseDepositFile(file: File): Promise<DepositFileData> {
+export async function parseDepositFile(file: File, headerRowIndex: number = 0): Promise<DepositFileData> {
   try {
-    console.log(`📁 [FILE_PARSER] Starting to parse file: ${file.name} (${file.size} bytes, type: ${file.type})`);
+    console.log(`📁 [FILE_PARSER] Starting to parse file: ${file.name} (${file.size} bytes, type: ${file.type}) with header row index: ${headerRowIndex}`);
     
     const buffer = await file.arrayBuffer();
     
@@ -45,9 +45,17 @@ export async function parseDepositFile(file: File): Promise<DepositFileData> {
 
     const sheet = workbook.Sheets[sheetName];
     
-    // First, try to parse with the first row as headers
-    let jsonData = XLSX.utils.sheet_to_json(sheet) as Record<string, any>[];
-    console.log(`📊 [FILE_PARSER] Parsed ${jsonData.length} rows from ${fileType} file`);
+    // Parse with specified header row index
+    let jsonData: Record<string, any>[];
+    if (headerRowIndex === 0) {
+      // Use first row as headers (default behavior)
+      jsonData = XLSX.utils.sheet_to_json(sheet) as Record<string, any>[];
+      console.log(`📊 [FILE_PARSER] Parsed ${jsonData.length} rows from ${fileType} file using row 0 as headers`);
+    } else {
+      // Skip rows until the specified header row
+      jsonData = XLSX.utils.sheet_to_json(sheet, { range: headerRowIndex }) as Record<string, any>[];
+      console.log(`📊 [FILE_PARSER] Parsed ${jsonData.length} rows from ${fileType} file using row ${headerRowIndex} as headers`);
+    }
 
     if (jsonData.length === 0) {
       throw new Error('No data found in file');
@@ -56,23 +64,6 @@ export async function parseDepositFile(file: File): Promise<DepositFileData> {
     let columns = Object.keys(jsonData[0] || {});
     console.log(`🏷️ [FILE_PARSER] Initial columns detected: ${columns.length} (${columns.join(', ')})`);
     
-    let allColumnsEmpty = columns.length > 0 && columns.every(col => col.startsWith('__EMPTY') || col.startsWith('_EMPTY'));
-
-    // If all columns in the first row are "_EMPTY" or "__EMPTY", skip the first row and use the second row as headers
-    if (allColumnsEmpty && jsonData.length > 1) {
-      console.log('🔄 [FILE_PARSER] First row contains all empty headers, skipping to second row...');
-      // Re-parse starting from row 1 (second row as header)
-      jsonData = XLSX.utils.sheet_to_json(sheet, { range: 1 }) as Record<string, any>[];
-      console.log(`📊 [FILE_PARSER] Re-parsed with second row as headers: ${jsonData.length} rows`);
-      
-      if (jsonData.length === 0) {
-        throw new Error('No data found in file after skipping first row');
-      }
-      
-      columns = Object.keys(jsonData[0] || {});
-      console.log(`🏷️ [FILE_PARSER] New columns after skipping first row: ${columns.length} (${columns.join(', ')})`);
-    }
-
     // Filter out XLSX-generated empty column names like "__EMPTY", "_EMPTY", "__EMPTY_1", "_EMPTY_1", etc.
     const filteredColumns = columns.filter(col => !col.startsWith('__EMPTY') && !col.startsWith('_EMPTY'));
     console.log(`🧹 [FILE_PARSER] Filtered out ${columns.length - filteredColumns.length} empty columns, remaining: ${filteredColumns.length} (${filteredColumns.join(', ')})`);

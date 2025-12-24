@@ -71,7 +71,9 @@ export default function AdminInlineDepositForm({
           tax_enabled: (settings?.tax_enabled || taxOverride.useOverride || false),
           tax_method: currentTaxMethod ? taxMethodMap[currentTaxMethod] || currentTaxMethod : undefined,
           tax_value: currentTaxValue,
-          tax_column_name: currentTaxColumn
+          tax_column_name: currentTaxColumn,
+          // Save header row index
+          header_row_index: headerRowIndex
         });
         setSettingsSaved(true);
         setTimeout(() => setSettingsSaved(false), 2000);
@@ -99,7 +101,12 @@ export default function AdminInlineDepositForm({
 
   const [calculation, setCalculation] = useState<any>(null);
   const [settings, setSettings] = useState<DepositSettings | null>(null);
+  const [filterSearchTerm, setFilterSearchTerm] = useState<string>('');
   const [submitting, setSubmitting] = useState(false);
+
+  // Header row index for manual control
+  const [headerRowIndex, setHeaderRowIndex] = useState<number>(0);
+  const [pendingHeaderRowIndex, setPendingHeaderRowIndex] = useState<number>(0);
 
   // Tax override state - for editing tax values before calculation
   const [taxOverride, setTaxOverride] = useState<{
@@ -168,10 +175,19 @@ export default function AdminInlineDepositForm({
           console.log('   Setting Tax Override:', newTaxOverride);
           setTaxOverride(newTaxOverride);
         }
+
+        // Auto-fill header row index from settings
+        if (loadedSettings.header_row_index !== undefined) {
+          console.log('🔄 Auto-filling header row index from settings:', loadedSettings.header_row_index);
+          setHeaderRowIndex(loadedSettings.header_row_index);
+          setPendingHeaderRowIndex(loadedSettings.header_row_index);
+        }
       } else {
         // Reset form if no settings
         setColumns({});
         setTaxOverride({ useOverride: false });
+        setHeaderRowIndex(0);
+        setPendingHeaderRowIndex(0);
       }
       
       setFile(null);
@@ -188,6 +204,19 @@ export default function AdminInlineDepositForm({
     console.log('📌 Tax Override updated:', taxOverride);
   }, [taxOverride]);
 
+  // Monitor filter search term changes
+  useEffect(() => {
+    console.log('🔍 [SEARCH] filterSearchTerm changed to:', filterSearchTerm);
+  }, [filterSearchTerm]);
+
+  // Monitor distinct values changes
+  useEffect(() => {
+    console.log('📊 [DATA] distinctValues updated:', Object.keys(distinctValues).length, 'columns with values');
+    Object.entries(distinctValues).forEach(([column, values]) => {
+      console.log('📊 [DATA] Column:', column, 'has', values.length, 'values');
+    });
+  }, [distinctValues]);
+
   // Handle file selection
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0];
@@ -197,7 +226,7 @@ export default function AdminInlineDepositForm({
     setUploadError('');
 
     try {
-      const data = await parseDepositFile(selectedFile);
+      const data = await parseDepositFile(selectedFile, headerRowIndex);
       setFileData(data);
 
       // Pre-fill from settings if available
@@ -224,6 +253,45 @@ export default function AdminInlineDepositForm({
     }
   };
 
+  // Apply new header row index
+  const applyHeaderRowIndex = async () => {
+    if (!file) return;
+
+    setHeaderRowIndex(pendingHeaderRowIndex);
+    setUploadError('');
+
+    try {
+      const data = await parseDepositFile(file, pendingHeaderRowIndex);
+      setFileData(data);
+
+      // Clear column selections when header changes
+      setColumns({});
+      setDistinctValues({});
+
+      // Re-apply settings if available
+      if (settings) {
+        const prefilledColumns: ColumnSelectState = {
+          filterColumn: settings.filter_column_name || '',
+          filterValues: settings.filter_include_values || [],
+          amountColumn: settings.amount_column_name || '',
+          refundColumn: settings.refund_column_name || ''
+        };
+        setColumns(prefilledColumns);
+
+        // Extract distinct values for filter column
+        if (settings.filter_column_name) {
+          const values = getDistinctValues(data.rows, settings.filter_column_name);
+          setDistinctValues((prev) => ({
+            ...prev,
+            [settings.filter_column_name!]: values
+          }));
+        }
+      }
+    } catch (err: any) {
+      setUploadError(err.message || 'Failed to re-parse file with new header row');
+    }
+  };
+
   // Handle column selection
   const handleColumnChange = (columnType: 'filterColumn' | 'amountColumn' | 'refundColumn', value: string) => {
     setColumns((prev) => ({
@@ -246,11 +314,14 @@ export default function AdminInlineDepositForm({
 
   // Handle filter value selection
   const handleFilterValueToggle = (value: string) => {
+    console.log('☑️ [TOGGLE] Toggling filter value:', value);
     setColumns((prev) => {
       const filterValues = prev.filterValues || [];
       const newValues = filterValues.includes(value)
         ? filterValues.filter((v) => v !== value)
         : [...filterValues, value];
+      
+      console.log('☑️ [TOGGLE] Filter values changed from:', filterValues.length, 'to:', newValues.length, 'values');
       return {
         ...prev,
         filterValues: newValues
@@ -302,7 +373,16 @@ export default function AdminInlineDepositForm({
             enabled: true
           }
         : {
-            method: settings?.tax_enabled ? settings?.tax_method : undefined,
+            method: settings?.tax_enabled ? (() => {
+              // Map database method names to UI names for calculation
+              const methodMap: any = {
+                'percentage': 'fixed_percent',
+                'fixed_amount': 'fixed_amount',
+                'column': 'column_based',
+                'no_tax': 'none'
+              };
+              return methodMap[settings?.tax_method || ''] || 'none';
+            })() : undefined,
             value: settings?.tax_enabled ? settings?.tax_value : undefined,
             columnName: settings?.tax_enabled ? settings?.tax_column_name : undefined,
             enabled: settings?.tax_enabled || false
@@ -586,6 +666,62 @@ export default function AdminInlineDepositForm({
         {settings && <p className="text-xs text-green-600 mt-1">✓ Settings loaded</p>}
       </div>
 
+      {file && (
+        <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+          <div className="flex items-center gap-3">
+            <div className="flex-1">
+              <label className="block text-sm font-medium text-blue-900 mb-1">
+                Header Row Index (0-based)
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min="0"
+                  max="100"
+                  value={pendingHeaderRowIndex}
+                  onChange={(e) => setPendingHeaderRowIndex(parseInt(e.target.value) || 0)}
+                  className="w-20 px-2 py-1 border border-blue-300 rounded text-sm focus:ring-1 focus:ring-blue-500"
+                  placeholder="0"
+                />
+                <span className="text-xs text-blue-700">Current: {headerRowIndex}</span>
+              </div>
+              <p className="text-xs text-blue-600 mt-1">
+                Which row contains the column headers? Row 0 = first row, Row 1 = second row, etc.
+              </p>
+            </div>
+            <div className="flex flex-col gap-2">
+              <button
+                onClick={applyHeaderRowIndex}
+                disabled={pendingHeaderRowIndex === headerRowIndex}
+                className="px-3 py-1 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
+              >
+                Apply
+              </button>
+              <button
+                onClick={() => {
+                  setPendingHeaderRowIndex(0);
+                  setHeaderRowIndex(0);
+                  if (file) handleFileChange({ target: { files: [file] } } as any);
+                }}
+                className="px-3 py-1 bg-gray-500 text-white text-sm rounded hover:bg-gray-600"
+              >
+                Reset
+              </button>
+              <button
+                onClick={() => {
+                  setPendingHeaderRowIndex(1);
+                  setHeaderRowIndex(1);
+                  if (file) handleFileChange({ target: { files: [file] } } as any);
+                }}
+                className="px-3 py-1 bg-green-600 text-white text-sm rounded hover:bg-green-700"
+              >
+                Auto
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {fileData && (
         <>
           <div className="grid grid-cols-3 gap-4 mb-4 p-3 bg-blue-50 rounded">
@@ -647,18 +783,123 @@ export default function AdminInlineDepositForm({
               <label className="block text-sm font-medium text-gray-700 mb-2">
                 Filter Values ({distinctValues[columns.filterColumn].length})
               </label>
+              
+              {/* Select All checkbox */}
+              <div className="mb-2">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={
+                      (() => {
+                        const filteredValues = distinctValues[columns.filterColumn].filter((value) => 
+                          filterSearchTerm === '' || 
+                          value.toLowerCase().includes(filterSearchTerm.toLowerCase())
+                        );
+                        const currentlySelected = columns.filterValues || [];
+                        return filteredValues.length > 0 && filteredValues.every(value => currentlySelected.includes(value));
+                      })()
+                    }
+                    ref={(el) => {
+                      if (el) {
+                        const filteredValues = distinctValues[columns.filterColumn].filter((value) => 
+                          filterSearchTerm === '' || 
+                          value.toLowerCase().includes(filterSearchTerm.toLowerCase())
+                        );
+                        const currentlySelected = columns.filterValues || [];
+                        const allFilteredSelected = filteredValues.every(value => currentlySelected.includes(value));
+                        const someFilteredSelected = filteredValues.some(value => currentlySelected.includes(value));
+                        el.indeterminate = !allFilteredSelected && someFilteredSelected;
+                      }
+                    }}
+                    onChange={() => {
+                      const filteredValues = distinctValues[columns.filterColumn].filter((value) => 
+                        filterSearchTerm === '' || 
+                        value.toLowerCase().includes(filterSearchTerm.toLowerCase())
+                      );
+                      const currentlySelected = columns.filterValues || [];
+                      
+                      console.log('✅ [SELECT_ALL] Filtered values:', filteredValues.length, 'Currently selected:', currentlySelected.length);
+                      
+                      // Check if all filtered values are selected
+                      const allFilteredSelected = filteredValues.every(value => currentlySelected.includes(value));
+                      
+                      console.log('✅ [SELECT_ALL] All filtered selected:', allFilteredSelected);
+                      
+                      if (allFilteredSelected) {
+                        // Unselect all filtered values
+                        const newSelected = currentlySelected.filter(value => !filteredValues.includes(value));
+                        console.log('✅ [SELECT_ALL] Unselecting all filtered, new selected count:', newSelected.length);
+                        setColumns((prev) => ({
+                          ...prev,
+                          filterValues: newSelected
+                        }));
+                      } else {
+                        // Select all filtered values
+                        const newSelected = [...new Set([...currentlySelected, ...filteredValues])];
+                        console.log('✅ [SELECT_ALL] Selecting all filtered, new selected count:', newSelected.length);
+                        setColumns((prev) => ({
+                          ...prev,
+                          filterValues: newSelected
+                        }));
+                      }
+                    }}
+                    className="w-4 h-4 rounded border-gray-300"
+                  />
+                  <span className="text-sm font-medium text-gray-700">
+                    {(() => {
+                      const filteredValues = distinctValues[columns.filterColumn].filter((value) => 
+                        filterSearchTerm === '' || 
+                        value.toLowerCase().includes(filterSearchTerm.toLowerCase())
+                      );
+                      const currentlySelected = columns.filterValues || [];
+                      const allFilteredSelected = filteredValues.every(value => currentlySelected.includes(value));
+                      
+                      return allFilteredSelected && filteredValues.length > 0
+                        ? `Unselect All (${filteredValues.length})`
+                        : currentlySelected.some(value => filteredValues.includes(value))
+                        ? `Select All (${filteredValues.length})`
+                        : `Select All (${filteredValues.length})`;
+                    })()}
+                  </span>
+                </label>
+              </div>
+              
+              {/* Search bar */}
+              <div className="mb-2">
+                <input
+                  type="text"
+                  placeholder="Search filter values..."
+                  value={filterSearchTerm}
+                  onChange={(e) => {
+                    console.log('🔍 [SEARCH] Search term changed from:', filterSearchTerm, 'to:', e.target.value);
+                    setFilterSearchTerm(e.target.value);
+                  }}
+                  className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              
               <div className="grid grid-cols-4 gap-2 max-h-32 overflow-y-auto">
-                {distinctValues[columns.filterColumn].map((value) => (
-                  <label key={value} className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={columns.filterValues?.includes(value) || false}
-                      onChange={() => handleFilterValueToggle(value)}
-                      className="w-4 h-4 rounded border-gray-300"
-                    />
-                    <span className="text-xs">{value}</span>
-                  </label>
-                ))}
+                {(() => {
+                  const allValues = distinctValues[columns.filterColumn];
+                  const filteredValues = allValues.filter((value) => 
+                    filterSearchTerm === '' || 
+                    value.toLowerCase().includes(filterSearchTerm.toLowerCase())
+                  );
+                  
+                  console.log('📋 [FILTER] All values:', allValues.length, 'Filtered values:', filteredValues.length, 'Search term:', filterSearchTerm);
+                  
+                  return filteredValues.map((value) => (
+                    <label key={value} className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={columns.filterValues?.includes(value) || false}
+                        onChange={() => handleFilterValueToggle(value)}
+                        className="w-4 h-4 rounded border-gray-300"
+                      />
+                      <span className="text-xs">{value}</span>
+                    </label>
+                  ));
+                })()}
               </div>
             </div>
           )}
@@ -910,6 +1151,12 @@ export default function AdminInlineDepositForm({
               className="flex-1 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:bg-gray-400 font-medium"
             >
               {savingSettings ? 'Saving...' : settingsSaved ? 'Saved!' : 'Save Settings'}
+            </button>
+            <button
+              onClick={handleCalculate}
+              className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium"
+            >
+              🔄 Recalculate Deposit
             </button>
             <div className="flex-1">
               <button
