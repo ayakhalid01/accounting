@@ -24,6 +24,31 @@ interface ColumnSelectState {
   refundColumn?: string;
 }
 
+// Helper function to check if a column contains mostly numeric data
+function isNumericColumn(rows: Record<string, any>[], columnName: string): boolean {
+  if (!rows.length) return false;
+
+  let numericCount = 0;
+  let totalCount = 0;
+
+  // Check first 10 rows or all rows if less than 10
+  const sampleSize = Math.min(10, rows.length);
+
+  for (let i = 0; i < sampleSize; i++) {
+    const value = rows[i][columnName];
+    if (value != null && value !== '') {
+      totalCount++;
+      const numValue = parseFloat(String(value));
+      if (!isNaN(numValue)) {
+        numericCount++;
+      }
+    }
+  }
+
+  // Consider column numeric if at least 70% of non-empty values are numeric
+  return totalCount > 0 && (numericCount / totalCount) >= 0.7;
+}
+
 export default function DepositUploadPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
@@ -154,7 +179,7 @@ export default function DepositUploadPage() {
     // Skip rows where all selected columns (amount, refund, filter) are empty
     const initialRowCount = filteredRows.length;
     filteredRows = filteredRows.filter((row: any) => {
-      const amountValue = row[columns.amountColumn];
+      const amountValue = columns.amountColumn ? row[columns.amountColumn] : null;
       const refundValue = columns.refundColumn ? row[columns.refundColumn] : null;
       const filterValue = columns.filterColumn ? row[columns.filterColumn] : null;
       

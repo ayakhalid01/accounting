@@ -907,7 +907,7 @@ export default function DepositsPage() {
       });
 
       // If deposit has an ordered method_group, compute allocations sequentially
-      const group = (deposit as any).method_group as Array<{payment_method_id: string; name_en?: string}> | undefined;
+      const group = (deposit as any).method_group as Array<{payment_method_id: string; name_en?: string; name?: string}> | undefined;
 
       if (group && group.length > 0) {
         console.log('🔀 deposit has method_group:', group.map(g => g.payment_method_id));
@@ -962,7 +962,7 @@ export default function DepositsPage() {
               if (resolvedPmId) {
                 ms = methodSummary.find((r: any) => r.payment_method_id === resolvedPmId) || methodSummary[0] || null;
               } else if (m.name_en || m.name) {
-                const nameMatch = (m.name_en || m.name).toLowerCase();
+                const nameMatch = (m.name_en || m.name || '').toLowerCase();
                 ms = methodSummary.find((r: any) => (r.name || '').toLowerCase().includes(nameMatch)) || methodSummary[0] || null;
               } else {
                 ms = methodSummary[0] || null;

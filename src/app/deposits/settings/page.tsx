@@ -30,6 +30,12 @@ export default function DepositSettingsPage() {
     paymentMethodId: '',
     filter_column_name: '',
     filter_include_values: [],
+    filter_column_name2: '',
+    filter_include_values2: [],
+    filter_column_name3: '',
+    filter_include_values3: [],
+    filter_column_name4: '',
+    filter_include_values4: [],
     amount_column_name: '',
     refund_column_name: '',
     tax_enabled: false,
@@ -40,6 +46,9 @@ export default function DepositSettingsPage() {
   });
 
   const [newFilterValue, setNewFilterValue] = useState('');
+  const [newFilterValue2, setNewFilterValue2] = useState('');
+  const [newFilterValue3, setNewFilterValue3] = useState('');
+  const [newFilterValue4, setNewFilterValue4] = useState('');
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Load all settings helper (can be called after import to refresh)
@@ -141,6 +150,12 @@ export default function DepositSettingsPage() {
         paymentMethodId: methodId,
         filter_column_name: existingSettings.filter_column_name || '',
         filter_include_values: existingSettings.filter_include_values || [],
+        filter_column_name2: existingSettings.filter_column_name2 || '',
+        filter_include_values2: existingSettings.filter_include_values2 || [],
+        filter_column_name3: existingSettings.filter_column_name3 || '',
+        filter_include_values3: existingSettings.filter_include_values3 || [],
+        filter_column_name4: existingSettings.filter_column_name4 || '',
+        filter_include_values4: existingSettings.filter_include_values4 || [],
         amount_column_name: existingSettings.amount_column_name || '',
         refund_column_name: existingSettings.refund_column_name || '',
         tax_enabled: existingSettings.tax_enabled,
@@ -154,6 +169,12 @@ export default function DepositSettingsPage() {
         paymentMethodId: methodId,
         filter_column_name: '',
         filter_include_values: [],
+        filter_column_name2: '',
+        filter_include_values2: [],
+        filter_column_name3: '',
+        filter_include_values3: [],
+        filter_column_name4: '',
+        filter_include_values4: [],
         amount_column_name: '',
         refund_column_name: '',
         tax_enabled: false,
@@ -179,6 +200,57 @@ export default function DepositSettingsPage() {
     setForm(prev => ({
       ...prev,
       filter_include_values: (prev.filter_include_values || []).filter(v => v !== value)
+    }));
+  };
+
+  const handleAddFilterValue2 = () => {
+    if (newFilterValue2.trim()) {
+      setForm(prev => ({
+        ...prev,
+        filter_include_values2: [...(prev.filter_include_values2 || []), newFilterValue2.trim()]
+      }));
+      setNewFilterValue2('');
+    }
+  };
+
+  const handleRemoveFilterValue2 = (value: string) => {
+    setForm(prev => ({
+      ...prev,
+      filter_include_values2: (prev.filter_include_values2 || []).filter(v => v !== value)
+    }));
+  };
+
+  const handleAddFilterValue3 = () => {
+    if (newFilterValue3.trim()) {
+      setForm(prev => ({
+        ...prev,
+        filter_include_values3: [...(prev.filter_include_values3 || []), newFilterValue3.trim()]
+      }));
+      setNewFilterValue3('');
+    }
+  };
+
+  const handleRemoveFilterValue3 = (value: string) => {
+    setForm(prev => ({
+      ...prev,
+      filter_include_values3: (prev.filter_include_values3 || []).filter(v => v !== value)
+    }));
+  };
+
+  const handleAddFilterValue4 = () => {
+    if (newFilterValue4.trim()) {
+      setForm(prev => ({
+        ...prev,
+        filter_include_values4: [...(prev.filter_include_values4 || []), newFilterValue4.trim()]
+      }));
+      setNewFilterValue4('');
+    }
+  };
+
+  const handleRemoveFilterValue4 = (value: string) => {
+    setForm(prev => ({
+      ...prev,
+      filter_include_values4: (prev.filter_include_values4 || []).filter(v => v !== value)
     }));
   };
 
@@ -247,7 +319,13 @@ export default function DepositSettingsPage() {
       await saveDepositSettings(form.paymentMethodId, {
         // Pass raw values so empty string clears the column explicitly (server maps '' -> NULL)
         filter_column_name: form.filter_column_name,
-        filter_include_values: form.filter_include_values?.length ? form.filter_include_values : undefined,
+        filter_include_values: form.filter_include_values || [],
+        filter_column_name2: form.filter_column_name2,
+        filter_include_values2: form.filter_include_values2 || [],
+        filter_column_name3: form.filter_column_name3,
+        filter_include_values3: form.filter_include_values3 || [],
+        filter_column_name4: form.filter_column_name4,
+        filter_include_values4: form.filter_include_values4 || [],
         amount_column_name: form.amount_column_name,
         refund_column_name: form.refund_column_name,
         tax_enabled: form.tax_enabled,
@@ -459,6 +537,12 @@ export default function DepositSettingsPage() {
             refund_column_name: item.refund_column || item.refund_column_name || undefined,
             filter_column_name: item.filter_column || item.filter_column_name || undefined,
             filter_include_values: item.filter_include_values || item.filter_values || undefined,
+            filter_column_name2: item.filter_column2 || item.filter_column_name2 || undefined,
+            filter_include_values2: item.filter_include_values2 || item.filter_values2 || undefined,
+            filter_column_name3: item.filter_column3 || item.filter_column_name3 || undefined,
+            filter_include_values3: item.filter_include_values3 || item.filter_values3 || undefined,
+            filter_column_name4: item.filter_column4 || item.filter_column_name4 || undefined,
+            filter_include_values4: item.filter_include_values4 || item.filter_values4 || undefined,
             // Do NOT default tax_enabled to false; keep undefined when missing so we don't overwrite
             tax_enabled: item.tax_enabled,
             tax_method: item.tax_method || undefined,
@@ -620,6 +704,12 @@ export default function DepositSettingsPage() {
         paymentMethodId: '',
         filter_column_name: '',
         filter_include_values: [],
+        filter_column_name2: '',
+        filter_include_values2: [],
+        filter_column_name3: '',
+        filter_include_values3: [],
+        filter_column_name4: '',
+        filter_include_values4: [],
         amount_column_name: '',
         refund_column_name: '',
         tax_enabled: false,
@@ -775,6 +865,45 @@ export default function DepositSettingsPage() {
                       <p className="text-xs text-gray-500 mt-1">Column name to filter by</p>
                     </div>
 
+                    {/* Filter Column 2 */}
+                    <div>
+                      <label className="block text-sm font-medium mb-2">Filter Column 2 (Optional)</label>
+                      <input
+                        type="text"
+                        value={form.filter_column_name2 || ''}
+                        onChange={(e) => setForm(prev => ({ ...prev, filter_column_name2: e.target.value }))}
+                        placeholder="e.g. Transaction Type"
+                        className="w-full px-3 py-2 rounded-lg border border-gray-300 bg-white"
+                      />
+                      <p className="text-xs text-gray-500 mt-1">Second column name to filter by</p>
+                    </div>
+
+                    {/* Filter Column 3 */}
+                    <div>
+                      <label className="block text-sm font-medium mb-2">Filter Column 3 (Optional)</label>
+                      <input
+                        type="text"
+                        value={form.filter_column_name3 || ''}
+                        onChange={(e) => setForm(prev => ({ ...prev, filter_column_name3: e.target.value }))}
+                        placeholder="e.g. Status"
+                        className="w-full px-3 py-2 rounded-lg border border-gray-300 bg-white"
+                      />
+                      <p className="text-xs text-gray-500 mt-1">Third column name to filter by</p>
+                    </div>
+
+                    {/* Filter Column 4 */}
+                    <div>
+                      <label className="block text-sm font-medium mb-2">Filter Column 4 (Optional)</label>
+                      <input
+                        type="text"
+                        value={form.filter_column_name4 || ''}
+                        onChange={(e) => setForm(prev => ({ ...prev, filter_column_name4: e.target.value }))}
+                        placeholder="e.g. Category"
+                        className="w-full px-3 py-2 rounded-lg border border-gray-300 bg-white"
+                      />
+                      <p className="text-xs text-gray-500 mt-1">Fourth column name to filter by</p>
+                    </div>
+
                     {/* Amount Column */}
                     <div>
                       <label className="block text-sm font-medium mb-2">Amount Column *</label>
@@ -836,6 +965,138 @@ export default function DepositSettingsPage() {
                               <button
                                 onClick={() => handleRemoveFilterValue(value)}
                                 className="hover:text-blue-600"
+                              >
+                                <X className="w-4 h-4" />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Filter Values 2 */}
+                  {form.filter_column_name2 && (
+                    <div className="mt-6">
+                      <label className="block text-sm font-medium mb-2">Default Filter Values 2</label>
+                      <p className="text-xs text-gray-500 mb-3">Add default filter values for the second column</p>
+
+                      <div className="flex gap-2 mb-3">
+                        <input
+                          type="text"
+                          value={newFilterValue2}
+                          onChange={(e) => setNewFilterValue2(e.target.value)}
+                          onKeyPress={(e) => e.key === 'Enter' && handleAddFilterValue2()}
+                          placeholder="Enter value and press Enter"
+                          className="flex-1 px-3 py-2 rounded-lg border border-gray-300 bg-white"
+                        />
+                        <button
+                          onClick={handleAddFilterValue2}
+                          className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                        >
+                          <Plus className="w-4 h-4" />
+                        </button>
+                      </div>
+
+                      {form.filter_include_values2 && form.filter_include_values2.length > 0 && (
+                        <div className="flex flex-wrap gap-2">
+                          {form.filter_include_values2.map(value => (
+                            <div
+                              key={value}
+                              className="inline-flex items-center gap-2 px-3 py-1 bg-green-100 text-green-800 rounded-full"
+                            >
+                              <span>{value}</span>
+                              <button
+                                onClick={() => handleRemoveFilterValue2(value)}
+                                className="hover:text-green-600"
+                              >
+                                <X className="w-4 h-4" />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Filter Values 3 */}
+                  {form.filter_column_name3 && (
+                    <div className="mt-6">
+                      <label className="block text-sm font-medium mb-2">Default Filter Values 3</label>
+                      <p className="text-xs text-gray-500 mb-3">Add default filter values for the third column</p>
+
+                      <div className="flex gap-2 mb-3">
+                        <input
+                          type="text"
+                          value={newFilterValue3}
+                          onChange={(e) => setNewFilterValue3(e.target.value)}
+                          onKeyPress={(e) => e.key === 'Enter' && handleAddFilterValue3()}
+                          placeholder="Enter value and press Enter"
+                          className="flex-1 px-3 py-2 rounded-lg border border-gray-300 bg-white"
+                        />
+                        <button
+                          onClick={handleAddFilterValue3}
+                          className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                        >
+                          <Plus className="w-4 h-4" />
+                        </button>
+                      </div>
+
+                      {form.filter_include_values3 && form.filter_include_values3.length > 0 && (
+                        <div className="flex flex-wrap gap-2">
+                          {form.filter_include_values3.map(value => (
+                            <div
+                              key={value}
+                              className="inline-flex items-center gap-2 px-3 py-1 bg-purple-100 text-purple-800 rounded-full"
+                            >
+                              <span>{value}</span>
+                              <button
+                                onClick={() => handleRemoveFilterValue3(value)}
+                                className="hover:text-purple-600"
+                              >
+                                <X className="w-4 h-4" />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Filter Values 4 */}
+                  {form.filter_column_name4 && (
+                    <div className="mt-6">
+                      <label className="block text-sm font-medium mb-2">Default Filter Values 4</label>
+                      <p className="text-xs text-gray-500 mb-3">Add default filter values for the fourth column</p>
+
+                      <div className="flex gap-2 mb-3">
+                        <input
+                          type="text"
+                          value={newFilterValue4}
+                          onChange={(e) => setNewFilterValue4(e.target.value)}
+                          onKeyPress={(e) => e.key === 'Enter' && handleAddFilterValue4()}
+                          placeholder="Enter value and press Enter"
+                          className="flex-1 px-3 py-2 rounded-lg border border-gray-300 bg-white"
+                        />
+                        <button
+                          onClick={handleAddFilterValue4}
+                          className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                        >
+                          <Plus className="w-4 h-4" />
+                        </button>
+                      </div>
+
+                      {form.filter_include_values4 && form.filter_include_values4.length > 0 && (
+                        <div className="flex flex-wrap gap-2">
+                          {form.filter_include_values4.map(value => (
+                            <div
+                              key={value}
+                              className="inline-flex items-center gap-2 px-3 py-1 bg-orange-100 text-orange-800 rounded-full"
+                            >
+                              <span>{value}</span>
+                              <button
+                                onClick={() => handleRemoveFilterValue4(value)}
+                                className="hover:text-orange-600"
                               >
                                 <X className="w-4 h-4" />
                               </button>

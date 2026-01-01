@@ -284,32 +284,23 @@ export interface StatCard {
 export type TaxCalculationMethod = 'fixed_percent' | 'fixed_amount' | 'column_based' | 'none';
 
 export interface DepositSettings {
-  id: string;
+  id?: string;
   payment_method_id: string;
   // Standardized naming: use _name suffix throughout the app
   filter_column_name?: string;
   filter_include_values?: string[];
+  filter_column_name2?: string;
+  filter_include_values2?: string[];
+  filter_column_name3?: string;
+  filter_include_values3?: string[];
+  filter_column_name4?: string;
+  filter_include_values4?: string[];
   amount_column_name: string;
   refund_column_name?: string;
   tax_enabled: boolean;
   tax_method: TaxCalculationMethod;
   tax_value?: number; // for fixed_percent or fixed_amount
   tax_column_name?: string; // for column_based
-  created_at: string;
-  updated_at: string;
-}
-
-export interface DepositSettings {
-  id?: string;
-  payment_method_id: string;
-  filter_column_name?: string;
-  filter_include_values?: string[];
-  amount_column_name: string;
-  refund_column_name?: string;
-  tax_enabled: boolean;
-  tax_method: 'fixed_percent' | 'fixed_amount' | 'column_based' | 'none';
-  tax_value?: number;
-  tax_column_name?: string;
   header_row_index?: number;
   created_at?: string;
   updated_at?: string;
@@ -336,4 +327,10 @@ export interface DepositConfig {
   taxMethod: TaxCalculationMethod;
   taxValue?: number;
   taxColumn?: string;
+}
+
+export interface DepositFileData {
+  columns: string[];
+  rows: Record<string, any>[];
+  rowCount: number;
 }

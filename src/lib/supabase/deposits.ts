@@ -44,6 +44,25 @@ export async function loadDepositSettings(paymentMethodId: string): Promise<Depo
       appSettings.header_row_index = data.header_row_index;
     }
 
+    // Debug: Log the loaded new filter columns
+    console.log('🔍 Loaded new filter columns from DB:', {
+      filter_column_name2: data.filter_column_name2,
+      filter_include_values2: data.filter_include_values2,
+      filter_column_name3: data.filter_column_name3,
+      filter_include_values3: data.filter_include_values3,
+      filter_column_name4: data.filter_column_name4,
+      filter_include_values4: data.filter_include_values4
+    });
+
+    console.log('🔍 Mapped app settings for new filters:', {
+      filter_column_name2: appSettings.filter_column_name2,
+      filter_include_values2: appSettings.filter_include_values2,
+      filter_column_name3: appSettings.filter_column_name3,
+      filter_include_values3: appSettings.filter_include_values3,
+      filter_column_name4: appSettings.filter_column_name4,
+      filter_include_values4: appSettings.filter_include_values4
+    });
+
     return appSettings;
   } catch (error) {
     console.error('❌ [DEPOSIT_SETTINGS] Exception:', error);
@@ -153,6 +172,14 @@ export async function saveDepositSettings(
       dbSettings.filter_values = settings.filter_include_values;
       dbSettings.filter_include_values = null; // Clear old naming
     }
+
+    // Map new filter columns (2, 3, 4) - always set them, even if empty arrays
+    dbSettings.filter_column_name2 = settings.filter_column_name2 === '' ? null : settings.filter_column_name2;
+    dbSettings.filter_include_values2 = settings.filter_include_values2 || [];
+    dbSettings.filter_column_name3 = settings.filter_column_name3 === '' ? null : settings.filter_column_name3;
+    dbSettings.filter_include_values3 = settings.filter_include_values3 || [];
+    dbSettings.filter_column_name4 = settings.filter_column_name4 === '' ? null : settings.filter_column_name4;
+    dbSettings.filter_include_values4 = settings.filter_include_values4 || [];
     
     // Copy tax settings as-is
     if (settings.tax_enabled !== undefined) {
@@ -197,6 +224,16 @@ export async function saveDepositSettings(
     }
     
     console.log('📝 Saving settings (mapped to DB schema):', dbSettings);
+    
+    // Debug: Log the new filter columns specifically
+    console.log('🔍 New filter columns in save:', {
+      filter_column_name2: dbSettings.filter_column_name2,
+      filter_include_values2: dbSettings.filter_include_values2,
+      filter_column_name3: dbSettings.filter_column_name3,
+      filter_include_values3: dbSettings.filter_include_values3,
+      filter_column_name4: dbSettings.filter_column_name4,
+      filter_include_values4: dbSettings.filter_include_values4
+    });
 
     const { data: existing } = await supabase
       .from('payment_method_deposit_settings')

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import Navigation from '@/components/Navigation';
 import { auth } from '@/lib/supabase/auth';
@@ -94,6 +94,9 @@ export default function DashboardPage() {
   const [refreshingAllocations, setRefreshingAllocations] = useState(false);
   const [allocationStats, setAllocationStats] = useState<any>(null);
 
+  // Filter application loading state
+  const [applyingFilters, setApplyingFilters] = useState(false);
+
   // ============================================
   // Refresh Deposit Allocations
   // ============================================
@@ -133,6 +136,12 @@ export default function DashboardPage() {
   // Pagination for comparison table
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 10;
+
+  // Search for comparison table
+  const [periodSearchTerm, setPeriodSearchTerm] = useState('');
+
+  // Search for methods table
+  const [methodSearchTerm, setMethodSearchTerm] = useState('');
 
   // Pagination for Methods table
   const [methodPage, setMethodPage] = useState(1);
@@ -291,14 +300,16 @@ export default function DashboardPage() {
     setAppliedMethod(selectedMethod);
     setAppliedPeriodType(periodType);
     setCurrentPage(1); // Reset pagination when filters change
+    setMethodPage(1); // Reset method pagination when filters change
+    setMethodSearchTerm(''); // Clear method search when filters change
     
     // Load data directly with new filter values (not from state which updates asynchronously)
-    setLoading(true);
+    setApplyingFilters(true);
     try {
       await loadDashboardDataWithFilters(startDate, endDate, selectedMethod, periodType);
       console.log('✅ [DASHBOARD] Data loaded successfully for payment method:', selectedMethod);
     } finally {
-      setLoading(false);
+      setApplyingFilters(false);
     }
   };
 
@@ -424,8 +435,12 @@ export default function DashboardPage() {
       const cacheKey = makeDashboardCacheKey(appliedStartDate, appliedEndDate, appliedMethod, appliedPeriodType);
       const cached = getCache<any>(cacheKey);
 
-      if (cached) {
-        console.log('⚡ Using cached dashboard data for', cacheKey);
+      // Check if cached data is valid (not empty/incomplete)
+      const isValidCache = cached && cached.stats && 
+        (cached.stats.totalSales > 0 || cached.stats.actualDepositsAmount > 0 || cached.stats.approvedDepositsAmount > 0);
+
+      if (isValidCache) {
+        console.log('⚡ Using valid cached dashboard data for', cacheKey);
         if (cached.stats) setStats(cached.stats);
         if (cached.periodComparisons) setPeriodComparisons(cached.periodComparisons);
         if (cached.methodSummaries) setMethodSummaries(cached.methodSummaries);
@@ -434,6 +449,7 @@ export default function DashboardPage() {
         setLoading(false);
         loadDashboardData({ background: true }).catch(err => console.error('Background refresh failed', err));
       } else {
+        console.log('📡 Cache invalid or missing, loading fresh data for', cacheKey);
         setLoading(true);
         loadDashboardData();
       }
@@ -1499,9 +1515,110 @@ export default function DashboardPage() {
     gap: stats.gapAmount
   });
 
+  // Filter period comparisons based on search term
+  const filteredPeriodComparisons = useMemo(() => {
+    if (!periodSearchTerm.trim()) {
+      return periodComparisons;
+    }
+    
+    const searchLower = periodSearchTerm.toLowerCase();
+    return periodComparisons.filter(period => 
+      period.period.toLowerCase().includes(searchLower) ||
+      period.periodStart.toLowerCase().includes(searchLower) ||
+      period.periodEnd.toLowerCase().includes(searchLower) ||
+      period.sales.toString().includes(searchLower) ||
+      period.approvedDeposits.toString().includes(searchLower) ||
+      period.pendingDeposits.toString().includes(searchLower) ||
+      period.gap.toString().includes(searchLower)
+    );
+  }, [periodComparisons, periodSearchTerm]);
+
+  // Memoized methods table data to prevent recalculation on every render
+  const methodsTableData = useMemo(() => {
+    const filtered = methodSummaries
+      .filter(m => appliedMethod === 'all' || m.payment_method_id === appliedMethod)
+      .filter(m => 
+        methodSearchTerm === '' || 
+        m.name?.toLowerCase().includes(methodSearchTerm.toLowerCase()) ||
+        m.payment_method_id?.toLowerCase().includes(methodSearchTerm.toLowerCase())
+      );
+    
+    const totalCount = filtered.length;
+    const totalPages = Math.max(1, Math.ceil(totalCount / methodItemsPerPage));
+    
+    const start = (methodPage - 1) * methodItemsPerPage;
+    const end = start + methodItemsPerPage;
+    const pageItems = filtered.slice(start, end);
+
+    // compute totals across filtered set
+    const totals = filtered.reduce((acc, cur) => {
+      acc.net += Number(cur.netInvoices || 0);
+      acc.approved += Number(cur.approvedAlloc || 0);
+      acc.pending += Number(cur.pendingAmt || 0);
+      acc.gap += Number(cur.gap || 0);
+      return acc;
+    }, { net: 0, approved: 0, pending: 0, gap: 0 });
+
+    return {
+      filtered,
+      totalCount,
+      totalPages,
+      pageItems,
+      totals,
+      start,
+      end
+    };
+  }, [methodSummaries, appliedMethod, methodSearchTerm, methodPage, methodItemsPerPage]);
+
+  // Reset method page if it's out of bounds after filtering
+  useEffect(() => {
+    if (methodPage > methodsTableData.totalPages && methodsTableData.totalPages > 0) {
+      setMethodPage(1);
+    }
+  }, [methodPage, methodsTableData.totalPages]);
+
+  // Reset current page if it's out of bounds after filtering
+  useEffect(() => {
+    const maxPages = Math.ceil(filteredPeriodComparisons.length / itemsPerPage);
+    if (currentPage > maxPages && maxPages > 0) {
+      setCurrentPage(1);
+    }
+  }, [filteredPeriodComparisons.length, currentPage, itemsPerPage]);
+
   return (
     <div className="min-h-screen bg-gray-50">
       <Navigation />
+      
+      {/* Loading Overlay */}
+      {(loading || refreshingAllocations || loadingMethodSummaries || applyingFilters) && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl p-6 max-w-sm mx-4">
+            <div className="flex items-center space-x-4">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900">
+                  {refreshingAllocations ? 'Refreshing Allocations' : 
+                   loadingMethodSummaries ? 'Loading Method Summaries' : 
+                   applyingFilters ? 'Applying Filters' :
+                   'Loading Dashboard Data'}
+                </h3>
+                <p className="text-sm text-gray-600 mt-1">
+                  {refreshingAllocations ? 'Updating deposit allocations...' : 
+                   loadingMethodSummaries ? 'Calculating payment method summaries...' : 
+                   applyingFilters ? 'Applying your filter selections...' :
+                   'Fetching dashboard data...'}
+                </p>
+              </div>
+            </div>
+            {/* Progress bar */}
+            <div className="mt-4">
+              <div className="w-full bg-gray-200 rounded-full h-2">
+                <div className="bg-blue-600 h-2 rounded-full animate-pulse" style={{width: '60%'}}></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <div className="mb-8">
@@ -1949,15 +2066,33 @@ export default function DashboardPage() {
 
         {/* Comparison Table */}
         <div className="bg-white shadow rounded-lg overflow-hidden">
-          {/* Header with Download and Count */}
-          <div className="px-6 py-4 border-b border-gray-200 flex flex-col sm:flex-row items-start sm:items-center justify-between bg-gray-50 gap-2">
+          {/* Header with Download, Search and Count */}
+          <div className="px-6 py-4 border-b border-gray-200 flex flex-col sm:flex-row items-start sm:items-center justify-between bg-gray-50 gap-4">
             <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4">
               <h3 className="text-lg font-medium text-gray-900">Detailed Comparison Table</h3>
               <span className="text-sm text-gray-600">
-                Total: <span className="font-medium">{periodComparisons.length}</span> periods
+                Total: <span className="font-medium">{filteredPeriodComparisons.length}</span> periods
+                {periodSearchTerm && <span className="text-blue-600"> (filtered from {periodComparisons.length})</span>}
               </span>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-3 w-full sm:w-auto">
+              {/* Search Bar */}
+              <div className="relative flex-1 sm:flex-initial">
+                <input
+                  type="text"
+                  placeholder="Search methods..."
+                  value={methodSearchTerm}
+                  onChange={(e) => {
+                    setMethodSearchTerm(e.target.value);
+                    setMethodPage(1); // Reset to first page when searching
+                  }}
+                  className="w-full sm:w-64 pl-9 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
+                />
+                <svg className="absolute left-3 top-2.5 h-4 w-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                </svg>
+              </div>
+              
               <button
                 onClick={downloadComparisonCSV}
                 disabled={periodComparisons.length === 0}
@@ -1973,7 +2108,13 @@ export default function DashboardPage() {
 
           {/* Method Summaries (per payment method) */}
           <div className="px-6 py-4 border-b border-gray-200 bg-white">
-            <h4 className="text-sm font-medium text-gray-700 mb-2">Methods in period</h4>
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-2">
+              <h4 className="text-sm font-medium text-gray-700">Methods in period</h4>
+              <span className="text-sm text-gray-600">
+                Total: <span className="font-medium">{methodsTableData.totalCount}</span> methods
+                {methodSearchTerm && <span className="text-blue-600"> (filtered from {methodSummaries.filter(m => appliedMethod === 'all' || m.payment_method_id === appliedMethod).length})</span>}
+              </span>
+            </div>
             {loadingMethodSummaries ? (
               // Skeleton table with 6 rows
               <div className="overflow-x-auto bg-white rounded">
@@ -2026,25 +2167,9 @@ export default function DashboardPage() {
                   </thead>
                   <tbody>
                     {
-                      // Prepare filtered and paginated data for methods
+                      // Use memoized methods table data
                       (() => {
-                        const filtered = methodSummaries.filter(m => appliedMethod === 'all' || m.payment_method_id === appliedMethod);
-                        const totalCount = filtered.length;
-                        const totalPages = Math.max(1, Math.ceil(totalCount / methodItemsPerPage));
-                        if (methodPage > totalPages) setMethodPage(1);
-
-                        const start = (methodPage - 1) * methodItemsPerPage;
-                        const end = start + methodItemsPerPage;
-                        const pageItems = filtered.slice(start, end);
-
-                        // compute totals across filtered set
-                        const totals = filtered.reduce((acc, cur) => {
-                          acc.net += Number(cur.netInvoices || 0);
-                          acc.approved += Number(cur.approvedAlloc || 0);
-                          acc.pending += Number(cur.pendingAmt || 0);
-                          acc.gap += Number(cur.gap || 0);
-                          return acc;
-                        }, { net: 0, approved: 0, pending: 0, gap: 0 });
+                        const { pageItems, totals, totalCount, totalPages, start, end } = methodsTableData;
 
                         return (
                           <>
@@ -2145,18 +2270,18 @@ export default function DashboardPage() {
                       </td>
                     </tr>
                   ))
-                ) : periodComparisons.length === 0 ? (
+                ) : filteredPeriodComparisons.length === 0 ? (
                   <tr>
                     <td colSpan={6} className="px-6 py-8 text-center text-gray-500">
-                      No data available
+                      {periodSearchTerm ? 'No periods match your search' : 'No data available'}
                     </td>
                   </tr>
                 ) : (
                   (() => {
-                    const totalPages = Math.ceil(periodComparisons.length / itemsPerPage);
+                    const totalPages = Math.ceil(filteredPeriodComparisons.length / itemsPerPage);
                     const startIdx = (currentPage - 1) * itemsPerPage;
                     const endIdx = startIdx + itemsPerPage;
-                    const paginatedData = periodComparisons.slice(startIdx, endIdx);
+                    const paginatedData = filteredPeriodComparisons.slice(startIdx, endIdx);
                     
                     return paginatedData.map((period, idx) => (
                   <tr key={idx} className="hover:bg-gray-50">
@@ -2201,10 +2326,11 @@ export default function DashboardPage() {
           </div>
           
           {/* Pagination Footer */}
-          {periodComparisons.length > 0 && (
+          {filteredPeriodComparisons.length > 0 && (
             <div className="px-6 py-4 border-t border-gray-200 bg-gray-50 flex items-center justify-between">
               <div className="text-sm text-gray-600">
-                Showing {Math.min((currentPage - 1) * itemsPerPage + 1, periodComparisons.length)}-{Math.min(currentPage * itemsPerPage, periodComparisons.length)} of {periodComparisons.length} periods
+                Showing {Math.min((currentPage - 1) * itemsPerPage + 1, filteredPeriodComparisons.length)}-{Math.min(currentPage * itemsPerPage, filteredPeriodComparisons.length)} of {filteredPeriodComparisons.length} periods
+                {periodSearchTerm && <span className="text-blue-600"> (filtered)</span>}
               </div>
               
               <div className="flex items-center gap-2">
@@ -2222,12 +2348,12 @@ export default function DashboardPage() {
                 <div className="px-4 py-2 bg-white border border-gray-300 rounded-lg">
                   <span className="font-medium text-gray-900">{currentPage}</span>
                   <span className="text-gray-600"> / </span>
-                  <span className="text-gray-600">{Math.ceil(periodComparisons.length / itemsPerPage)}</span>
+                  <span className="text-gray-600">{Math.ceil(filteredPeriodComparisons.length / itemsPerPage)}</span>
                 </div>
                 
                 <button
-                  onClick={() => setCurrentPage(Math.min(Math.ceil(periodComparisons.length / itemsPerPage), currentPage + 1))}
-                  disabled={currentPage >= Math.ceil(periodComparisons.length / itemsPerPage)}
+                  onClick={() => setCurrentPage(Math.min(Math.ceil(filteredPeriodComparisons.length / itemsPerPage), currentPage + 1))}
+                  disabled={currentPage >= Math.ceil(filteredPeriodComparisons.length / itemsPerPage)}
                   className="p-2 hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors"
                   title="Next page"
                 >

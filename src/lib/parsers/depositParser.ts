@@ -16,9 +16,9 @@ export async function parseDepositFile(file: File, headerRowIndex: number = 0): 
     if (file.name.endsWith('.csv')) {
       fileType = 'CSV';
       console.log(`📄 [FILE_PARSER] Detected CSV file, parsing as text...`);
-      // Parse CSV
+      // Parse CSV with raw option to preserve exact casing
       const text = new TextDecoder().decode(buffer);
-      workbook = XLSX.read(text, { type: 'string' });
+      workbook = XLSX.read(text, { type: 'string', raw: true });
     } else if (file.name.endsWith('.xlsx')) {
       fileType = 'Excel (.xlsx)';
       console.log(`📊 [FILE_PARSER] Detected Excel .xlsx file, parsing as binary...`);
@@ -45,20 +45,148 @@ export async function parseDepositFile(file: File, headerRowIndex: number = 0): 
 
     const sheet = workbook.Sheets[sheetName];
     
-    // Parse with specified header row index
+    // Check if sheet has any data
+    if (!sheet['!ref']) {
+      throw new Error('Sheet appears to be empty or has no data range');
+    }
+    
+    // Parse with specified header row index and preserve original display formatting
     let jsonData: Record<string, any>[];
-    if (headerRowIndex === 0) {
-      // Use first row as headers (default behavior)
-      jsonData = XLSX.utils.sheet_to_json(sheet) as Record<string, any>[];
-      console.log(`📊 [FILE_PARSER] Parsed ${jsonData.length} rows from ${fileType} file using row 0 as headers`);
-    } else {
-      // Skip rows until the specified header row
-      jsonData = XLSX.utils.sheet_to_json(sheet, { range: headerRowIndex }) as Record<string, any>[];
-      console.log(`📊 [FILE_PARSER] Parsed ${jsonData.length} rows from ${fileType} file using row ${headerRowIndex} as headers`);
+    
+    // Get formatted values by processing cells individually (works for any headerRowIndex)
+    const range = XLSX.utils.decode_range(sheet['!ref']);
+    const headers: string[] = [];
+
+    console.log(`📊 [FILE_PARSER] Sheet range: ${sheet['!ref']} (rows: ${range.e.r - range.s.r + 1}, cols: ${range.e.c - range.s.c + 1})`);
+    
+    // Validate headerRowIndex is within sheet bounds
+    if (headerRowIndex > range.e.r) {
+      console.warn(`⚠️ [FILE_PARSER] Header row index ${headerRowIndex} exceeds sheet range, using row 0`);
+      headerRowIndex = 0;
+    }
+
+    // Get headers from specified header row, skipping empty columns at the beginning
+    let startCol = range.s.c;
+    
+    // Find the first non-empty column in the header row
+    for (let col = range.s.c; col <= range.e.c; col++) {
+      const cellAddress = XLSX.utils.encode_cell({ r: headerRowIndex, c: col });
+      const cell = sheet[cellAddress];
+      if (cell && cell.v !== undefined && String(cell.v).trim() !== '') {
+        startCol = col;
+        console.log(`🎯 [FILE_PARSER] Found first non-empty header at column ${col} (skipping ${col - range.s.c} empty columns)`);
+        break;
+      }
+    }
+    
+    // Now collect headers starting from the first non-empty column
+    for (let col = startCol; col <= range.e.c; col++) {
+      const cellAddress = XLSX.utils.encode_cell({ r: headerRowIndex, c: col });
+      const cell = sheet[cellAddress];
+      if (cell && cell.v !== undefined) {
+        const headerName = String(cell.v).trim();
+        if (headerName !== '') {
+          headers.push(headerName);
+        } else {
+          // Include empty header cells that come after non-empty ones
+          headers.push(`Column ${headers.length + 1}`);
+        }
+      } else {
+        headers.push(`Column ${headers.length + 1}`);
+      }
+    }
+
+    console.log(`🏷️ [FILE_PARSER] Found ${headers.length} headers at row ${headerRowIndex}: ${headers.join(', ')}`);
+
+    // If no headers found, try to use default column names or fallback to row 0
+    if (headers.length === 0) {
+      console.warn(`⚠️ [FILE_PARSER] No headers found at row ${headerRowIndex}, trying row 0...`);
+      startCol = range.s.c;
+      
+      // Find first non-empty in row 0 as well
+      for (let col = range.s.c; col <= range.e.c; col++) {
+        const cellAddress = XLSX.utils.encode_cell({ r: 0, c: col });
+        const cell = sheet[cellAddress];
+        if (cell && cell.v !== undefined && String(cell.v).trim() !== '') {
+          startCol = col;
+          console.log(`🎯 [FILE_PARSER] Fallback: Found first non-empty header at column ${col} in row 0`);
+          break;
+        }
+      }
+      
+      for (let col = startCol; col <= range.e.c; col++) {
+        const cellAddress = XLSX.utils.encode_cell({ r: 0, c: col });
+        const cell = sheet[cellAddress];
+        if (cell && cell.v !== undefined) {
+          headers.push(String(cell.v));
+        }
+      }
+      
+      if (headers.length === 0) {
+        // Generate default column names
+        const numCols = range.e.c - startCol + 1;
+        headers.push(...Array.from({ length: numCols }, (_, i) => `Column ${i + 1}`));
+        console.warn(`⚠️ [FILE_PARSER] Using default column names starting from column ${startCol}: ${headers.join(', ')}`);
+      } else {
+        console.log(`✅ [FILE_PARSER] Fallback to row 0 headers starting from column ${startCol}: ${headers.join(', ')}`);
+      }
+    }
+
+    // Parse data rows starting from the row after header
+    const dataRows: Record<string, any>[] = [];
+    for (let row = headerRowIndex + 1; row <= range.e.r; row++) {
+      const rowData: Record<string, any> = {};
+      let hasData = false;
+
+      // Start from the same startCol as headers to maintain alignment
+      for (let col = 0; col < headers.length; col++) {
+        const actualCol = startCol + col; // Map header index to actual column index
+        const cellAddress = XLSX.utils.encode_cell({ r: row, c: actualCol });
+        const cell = sheet[cellAddress];
+
+        if (cell) {
+          // Preserve original formatting - prioritize raw value for exact representation
+          let cellValue: any;
+          
+          // For boolean cells, preserve the formatted display (TRUE/FALSE) if available
+          if (cell.t === 'b' && cell.w !== undefined) {
+            cellValue = cell.w; // Use formatted boolean display (TRUE/FALSE)
+          } else if (cell.v !== undefined) {
+            cellValue = cell.v; // Use raw value for other types
+          } else if (cell.w !== undefined) {
+            cellValue = cell.w; // Fallback to formatted value
+          } else {
+            cellValue = '';
+          }
+          
+          // Convert to string while preserving original casing
+          rowData[headers[col]] = cellValue === null || cellValue === undefined ? '' : String(cellValue);
+          
+          if (rowData[headers[col]] !== '') {
+            hasData = true;
+          }
+        } else {
+          rowData[headers[col]] = '';
+        }
+      }
+
+      if (hasData) {
+        dataRows.push(rowData);
+      }
+    }
+
+    jsonData = dataRows;
+    console.log(`📊 [FILE_PARSER] Parsed ${jsonData.length} data rows from ${fileType} file (header at row ${headerRowIndex})`);
+    
+    // If no data rows found but we have headers, it might be that headerRowIndex is too high
+    if (jsonData.length === 0 && headers.length > 0) {
+      console.warn(`⚠️ [FILE_PARSER] No data rows found, but headers exist. This might indicate headerRowIndex (${headerRowIndex}) is set too high.`);
     }
 
     if (jsonData.length === 0) {
-      throw new Error('No data found in file');
+      console.warn(`⚠️ [FILE_PARSER] No data rows found after header row ${headerRowIndex}`);
+      console.warn(`📊 [FILE_PARSER] Sheet details: range=${sheet['!ref']}, headers=${headers.length}, headerRowIndex=${headerRowIndex}`);
+      throw new Error(`No data found in file after header row. Please check that your header row index (${headerRowIndex}) is correct and there are data rows below it.`);
     }
 
     let columns = Object.keys(jsonData[0] || {});
@@ -86,15 +214,56 @@ export async function parseDepositFile(file: File, headerRowIndex: number = 0): 
  */
 export function getDistinctValues(rows: Record<string, any>[], columnName: string): string[] {
   const values = new Set<string>();
-  
+  const rawValues = new Set<any>();
+
   rows.forEach(row => {
     const value = row[columnName];
-    if (value !== null && value !== undefined && value !== '') {
-      values.add(String(value).trim());
+    rawValues.add(value); // Track raw values for debugging
+
+    // Preserve the exact string representation as it appears in the parsed data
+    if (value !== null && value !== undefined) {
+      const stringValue = String(value).trim();
+      if (stringValue !== '') {
+        values.add(stringValue);
+      }
     }
   });
 
-  return Array.from(values).sort();
+  // Convert to array and sort alphabetically to preserve original appearance order
+  const result = Array.from(values).sort((a, b) => a.localeCompare(b));
+
+  console.log(`🔍 [DISTINCT_VALUES] Column "${columnName}": ${rawValues.size} raw values, ${values.size} distinct string values`);
+  console.log(`🔍 [DISTINCT_VALUES] Raw values sample:`, Array.from(rawValues).slice(0, 5));
+  console.log(`🔍 [DISTINCT_VALUES] String values sample:`, result.slice(0, 10));
+
+  return result;
+}
+
+/**
+ * Check if a column contains mostly numeric data
+ */
+export function isNumericColumn(rows: Record<string, any>[], columnName: string): boolean {
+  if (!rows.length) return false;
+
+  let numericCount = 0;
+  let totalCount = 0;
+
+  // Check first 10 rows or all rows if less than 10
+  const sampleSize = Math.min(10, rows.length);
+
+  for (let i = 0; i < sampleSize; i++) {
+    const value = rows[i][columnName];
+    if (value != null && value !== '') {
+      totalCount++;
+      const numValue = parseFloat(String(value));
+      if (!isNaN(numValue)) {
+        numericCount++;
+      }
+    }
+  }
+
+  // Consider column numeric if at least 70% of non-empty values are numeric
+  return totalCount > 0 && (numericCount / totalCount) >= 0.7;
 }
 
 /**
@@ -153,7 +322,7 @@ export function calculateDepositTotals(
   // Convert amount and refund columns to numbers
   let processedRows = convertAmountColumnToNumbers(rows, amountColumnName, 'Amount');
   if (refundColumnName) {
-    processedRows = convertAmountColumnToNumbers(processedRows, refundColumnName, 'Refund');
+    processedRows = convertAmountColumnToNumbers(processedRows, refundColumnName, 'Refund'); // Normal comma parsing
   }
   if (taxColumnName && (taxMethod === 'column_based')) {
     processedRows = convertAmountColumnToNumbers(processedRows, taxColumnName, 'Tax');
@@ -206,7 +375,8 @@ export function convertAmountColumnToNumbers(rows: Record<string, any>[], column
       return row;
     }
     
-    const numericValue = parseFloat(stringValue);
+    // Parse number with comma handling
+    const numericValue = parseNumberWithCommas(stringValue);
     
     if (isNaN(numericValue)) {
       console.warn(`⚠️ [AMOUNT_CONVERT] Row ${index + 1}: Invalid ${label} value "${originalValue}" -> 0`);
@@ -227,3 +397,69 @@ export function convertAmountColumnToNumbers(rows: Record<string, any>[], column
   
   return convertedRows;
 }
+
+/**
+ * Parse number strings that may contain commas as thousands separators
+ */
+function parseNumberWithCommas(value: string): number {
+  if (!value || typeof value !== 'string') {
+    return NaN;
+  }
+
+  // Remove all spaces and handle various formats
+  let cleanValue = value.replace(/\s/g, '');
+
+  // Check for negative signs at the beginning or end
+  const isNegativeAtStart = cleanValue.startsWith('-');
+  const isNegativeAtEnd = cleanValue.endsWith('-');
+
+  // Remove negative signs from both ends
+  if (isNegativeAtStart) {
+    cleanValue = cleanValue.slice(1); // Remove leading minus sign
+  }
+  if (isNegativeAtEnd) {
+    cleanValue = cleanValue.slice(0, -1); // Remove trailing minus sign
+  }
+
+  // Handle different number formats:
+  // 1. "384,944.49" (comma as thousands separator, dot as decimal)
+  // 2. "384.944,49" (dot as thousands separator, comma as decimal - European style)
+  // 3. "384944.49" (no separators)
+  // 4. "384944,49" (comma as decimal)
+
+  // Count dots and commas
+  const dotCount = (cleanValue.match(/\./g) || []).length;
+  const commaCount = (cleanValue.match(/,/g) || []).length;
+
+  let result: number;
+
+  if (dotCount === 1 && commaCount === 0) {
+    // Standard format: "384944.49" or "384,944.49"
+    cleanValue = cleanValue.replace(/,/g, '');
+    result = parseFloat(cleanValue);
+  } else if (commaCount === 1 && dotCount === 0) {
+    // European format: "384944,49" -> convert to "384944.49"
+    cleanValue = cleanValue.replace(/,/g, '.');
+    result = parseFloat(cleanValue);
+  } else if (dotCount === 1 && commaCount >= 1) {
+    // Mixed format like "384,944.49" - comma is thousands separator
+    cleanValue = cleanValue.replace(/,/g, '');
+    result = parseFloat(cleanValue);
+  } else if (commaCount === 1 && dotCount >= 1) {
+    // European mixed format like "384.944,49" - dot is thousands separator, comma is decimal
+    cleanValue = cleanValue.replace(/\./g, '').replace(/,/g, '.');
+    result = parseFloat(cleanValue);
+  } else {
+    // Remove all separators and try to parse
+    cleanValue = cleanValue.replace(/[,]/g, '');
+    result = parseFloat(cleanValue);
+  }
+
+  // Apply negative sign if it was present at start or end
+  if ((isNegativeAtStart || isNegativeAtEnd) && !isNaN(result)) {
+    result = -result;
+  }
+
+  return isNaN(result) ? NaN : result;
+}
+

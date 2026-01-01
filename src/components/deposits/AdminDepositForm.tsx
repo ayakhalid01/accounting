@@ -893,9 +893,9 @@ export default function AdminDepositForm({ onClose, onSuccess, currentUserId }: 
                         })()
                       }
                       ref={(el) => {
-                        if (el) {
-                          const filteredValues = distinctValues[columns.filterColumn].filter((value) => 
-                            filterSearchTerm === '' || 
+                        if (el && columns.filterColumn) {
+                          const filteredValues = distinctValues[columns.filterColumn].filter((value) =>
+                            filterSearchTerm === '' ||
                             value.toLowerCase().includes(filterSearchTerm.toLowerCase())
                           );
                           const currentlySelected = columns.filterValues || [];
@@ -905,8 +905,10 @@ export default function AdminDepositForm({ onClose, onSuccess, currentUserId }: 
                         }
                       }}
                       onChange={() => {
-                        const filteredValues = distinctValues[columns.filterColumn].filter((value) => 
-                          filterSearchTerm === '' || 
+                        if (!columns.filterColumn) return;
+
+                        const filteredValues = distinctValues[columns.filterColumn].filter((value) =>
+                          filterSearchTerm === '' ||
                           value.toLowerCase().includes(filterSearchTerm.toLowerCase())
                         );
                         const currentlySelected = columns.filterValues || [];
