@@ -14,6 +14,7 @@ import {
   AlertTriangle,
   Wallet
 } from 'lucide-react';
+import { StatCardSkeleton, TableSkeleton, LoadingWrapper } from '@/components/SkeletonLoaders';
 
 interface DashboardStats {
   totalSales: number;
@@ -277,22 +278,8 @@ export default function DashboardPage() {
     };
     localStorage.setItem('dashboard_filters', JSON.stringify(filtersToSave));
     
-    // IMPORTANT: Clear old data before loading new data
-    console.log('🗑️ [DASHBOARD] Clearing old data...');
-    setPeriodComparisons([]);
-    setStats({
-      totalSales: 0,
-      approvedDepositsAmount: 0,
-      pendingDepositsAmount: 0,
-      approvedDepositsCount: 0,
-      approvedDepositsGroupCount: 0,
-      approvedDepositsGroupAmount: 0,
-      pendingDepositsCount: 0,
-      actualDepositsAmount: 0,
-      actualDepositsCount: 0,
-      gapAmount: 0,
-      gapAfterPending: 0,
-    });
+    // DON'T clear old data - keep it visible while loading new data
+    console.log('🔄 [DASHBOARD] Keeping old data visible while loading...');
     
     // IMPORTANT: Update applied filters with NEW values (not waiting for state update)
     setAppliedStartDate(startDate);
@@ -1589,8 +1576,8 @@ export default function DashboardPage() {
     <div className="min-h-screen bg-gray-50">
       <Navigation />
       
-      {/* Loading Overlay */}
-      {(loading || refreshingAllocations || loadingMethodSummaries || applyingFilters) && (
+      {/* Loading Overlay - Only show for initial load and refresh allocations */}
+      {(loading || refreshingAllocations) && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg shadow-xl p-6 max-w-sm mx-4">
             <div className="flex items-center space-x-4">
@@ -1715,34 +1702,23 @@ export default function DashboardPage() {
         {/* Stats Cards */}
         <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 md:grid-cols-3 mb-8">
           {loading ? (
-            // Skeleton placeholders while loading
-            Array.from({ length: 3 }).map((_, i) => (
-              <div key={i} className="bg-white overflow-hidden shadow rounded-lg min-w-[260px] m-2">
-                <div className="p-5 animate-pulse">
-                  <div className="flex items-center">
-                    <div className="flex-shrink-0 rounded-md p-3 bg-gray-200 w-12 h-12" />
-                    <div className="ml-5 w-0 flex-1">
-                      <dl>
-                        <dt className="h-4 bg-gray-200 rounded w-32" />
-                        <dd className="mt-3">
-                          <div className="h-8 bg-gray-200 rounded w-40" />
-                          <div className="mt-2 h-3 bg-gray-200 rounded w-24" />
-                        </dd>
-                      </dl>
-                    </div>
-                  </div>
-                </div>
-              </div>
+            // Skeleton placeholders while initial loading
+            Array.from({ length: 5 }).map((_, i) => (
+              <StatCardSkeleton key={i} />
             ))
           ) : (
             statCards.map((stat, index) => {
+              const isUpdating = applyingFilters || loadingMethodSummaries;
               const Icon = stat.icon;
               return (
-                <div
+                <LoadingWrapper 
                   key={index}
-                  className="bg-white overflow-hidden shadow rounded-lg min-w-[260px] m-2"
+                  isLoading={isUpdating} 
+                  showOldData={true}
+                  loadingText="Updating..."
                 >
-                  <div className="p-5">
+                  <div className="bg-white overflow-hidden shadow rounded-lg min-w-[260px] m-2">
+                    <div className="p-5">
                     <div className="flex items-center">
                       <div className={`flex-shrink-0 rounded-md p-3 ${stat.color}`}>
                         <Icon className="h-6 w-6 text-white" />
@@ -1765,12 +1741,18 @@ export default function DashboardPage() {
                     </div>
                   </div>
                 </div>
+                </LoadingWrapper>
               );
             })
           )}
         </div>
 
         {/* Chart */}
+        <LoadingWrapper 
+          isLoading={applyingFilters} 
+          showOldData={true}
+          loadingText="Updating..."
+        >
         <div className="bg-white shadow rounded-lg p-6 mb-8">
           <h3 className="text-lg font-medium text-gray-900 mb-6">Sales vs Deposits Comparison</h3>
           {loading ? (
@@ -2063,6 +2045,7 @@ export default function DashboardPage() {
             </div>
           )}
         </div>
+        </LoadingWrapper>
 
         {/* Comparison Table */}
         <div className="bg-white shadow rounded-lg overflow-hidden">
@@ -2107,6 +2090,11 @@ export default function DashboardPage() {
           </div>
 
           {/* Method Summaries (per payment method) */}
+          <LoadingWrapper 
+            isLoading={applyingFilters} 
+            showOldData={true}
+            loadingText="Updating..."
+          >
           <div className="px-6 py-4 border-b border-gray-200 bg-white">
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-2">
               <h4 className="text-sm font-medium text-gray-700">Methods in period</h4>
@@ -2233,6 +2221,12 @@ export default function DashboardPage() {
               </div>
             )}
           </div>
+          </LoadingWrapper>
+          <LoadingWrapper 
+            isLoading={applyingFilters} 
+            showOldData={true}
+            loadingText="Updating..."
+          >
           <div className="overflow-x-auto">
             <table className="min-w-full divide-y divide-gray-200">
               <thead className="bg-gray-50">
@@ -2364,6 +2358,7 @@ export default function DashboardPage() {
               </div>
             </div>
           )}
+          </LoadingWrapper>
         </div>
       </main>
     </div>
