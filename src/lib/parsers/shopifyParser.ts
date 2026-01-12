@@ -19,16 +19,33 @@ export function convertShopifyDate(dateStr: string): string {
 }
 
 /**
- * Parse date string to Date object (from MM/DD/YYYY format)
+ * Parse date string to Date object (handles multiple formats)
  */
 export function parseShopifyDate(dateStr: string): Date | null {
   if (!dateStr) return null;
   
-  const parts = dateStr.split('/');
-  if (parts.length === 3) {
-    // MM/DD/YYYY format
-    const [month, day, year] = parts.map(p => parseInt(p, 10));
+  const str = String(dateStr).trim();
+  
+  // Handle YYYY-MM-DD format (ISO format, already correct for DB)
+  if (str.match(/^\d{4}-\d{2}-\d{2}$/)) {
+    const [year, month, day] = str.split('-').map(p => parseInt(p, 10));
     return new Date(year, month - 1, day);
+  }
+  
+  // Handle MM/DD/YYYY format (US format from Shopify)
+  if (str.includes('/')) {
+    const parts = str.split('/');
+    if (parts.length === 3) {
+      const [month, day, year] = parts.map(p => parseInt(p, 10));
+      return new Date(year, month - 1, day);
+    }
+  }
+  
+  // Handle DD-MM-YYYY or DD/MM/YYYY (if day > 12, assume DD/MM/YYYY)
+  // Try parsing as Date object
+  const parsed = new Date(str);
+  if (!isNaN(parsed.getTime())) {
+    return parsed;
   }
   
   return null;
@@ -38,8 +55,17 @@ export function parseShopifyDate(dateStr: string): Date | null {
  * Format Date to YYYY-MM-DD for database
  */
 export function formatDateForDB(dateStr: string): string {
-  const date = parseShopifyDate(dateStr);
-  if (!date) return '';
+  if (!dateStr) return '';
+  
+  const str = String(dateStr).trim();
+  
+  // If already in YYYY-MM-DD format, return as-is
+  if (str.match(/^\d{4}-\d{2}-\d{2}$/)) {
+    return str;
+  }
+  
+  const date = parseShopifyDate(str);
+  if (!date || isNaN(date.getTime())) return '';
   
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, '0');

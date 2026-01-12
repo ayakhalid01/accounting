@@ -14,25 +14,45 @@ export async function insertShopifySalesBatch(
 ): Promise<{ success: boolean; inserted: number; errors: string[] }> {
   const errors: string[] = [];
   let inserted = 0;
+  let skipped = 0;
   
   console.log(`📤 [SHOPIFY] Starting batch insert of ${rows.length} rows`);
   
   for (let i = 0; i < rows.length; i += BATCH_SIZE) {
     const batch = rows.slice(i, i + BATCH_SIZE);
     
-    const insertData = batch.map(row => ({
-      transaction_id: row.transaction_id,
-      day: formatDateForDB(row.day),
-      order_name: row.order_name,
-      payment_gateway: row.payment_gateway,
-      pos_location_name: row.pos_location_name,
-      order_sales_channel: row.order_sales_channel,
-      pos_register_id: row.pos_register_id,
-      gross_payments: row.gross_payments,
-      refunded_payments: row.refunded_payments,
-      net_payments: row.net_payments,
-      imported_by: userId
-    }));
+    const insertData = batch.map(row => {
+      const dayForDB = formatDateForDB(row.day);
+      return {
+        transaction_id: row.transaction_id,
+        day: dayForDB,
+        order_name: row.order_name,
+        payment_gateway: row.payment_gateway,
+        pos_location_name: row.pos_location_name,
+        order_sales_channel: row.order_sales_channel,
+        pos_register_id: row.pos_register_id,
+        gross_payments: row.gross_payments,
+        refunded_payments: row.refunded_payments,
+        net_payments: row.net_payments,
+        group_key: `${dayForDB}|${row.order_name}|${row.payment_gateway}`,
+        imported_by: userId
+      };
+    }).filter(row => {
+      // Skip rows with empty dates
+      if (!row.day) {
+        skipped++;
+        return false;
+      }
+      return true;
+    });
+    
+    // Skip empty batches
+    if (insertData.length === 0) {
+      if (onProgress) {
+        onProgress(Math.min(i + BATCH_SIZE, rows.length), rows.length);
+      }
+      continue;
+    }
     
     const { error } = await supabase
       .from('shopify_sales')
@@ -42,12 +62,16 @@ export async function insertShopifySalesBatch(
       console.error(`❌ [SHOPIFY] Batch insert error:`, error);
       errors.push(`Batch ${Math.floor(i / BATCH_SIZE) + 1}: ${error.message}`);
     } else {
-      inserted += batch.length;
+      inserted += insertData.length;
     }
     
     if (onProgress) {
       onProgress(Math.min(i + BATCH_SIZE, rows.length), rows.length);
     }
+  }
+  
+  if (skipped > 0) {
+    console.log(`⚠️ [SHOPIFY] Skipped ${skipped} rows with invalid dates`);
   }
   
   console.log(`✅ [SHOPIFY] Inserted ${inserted} rows with ${errors.length} errors`);
