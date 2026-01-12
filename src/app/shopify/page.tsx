@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import Navigation from '@/components/Navigation';
 import { auth } from '@/lib/supabase/auth';
@@ -23,10 +23,52 @@ import { ShopifyImportRow, ShopifySale, ShopifyFilters } from '@/types';
 import { Upload, Search, Filter, Trash2, Download, RefreshCw, X } from 'lucide-react';
 import { StatCardSkeleton, TableSkeleton } from '@/components/SkeletonLoaders';
 
+// Cache key for sessionStorage
+const SHOPIFY_CACHE_KEY = 'shopify_page_state';
+
+interface CachedState {
+  filters: ShopifyFilters;
+  currentPage: number;
+  pageSize: number;
+  timestamp: number;
+}
+
+// Check if we're in browser
+const isBrowser = typeof window !== 'undefined';
+
+// Save state to sessionStorage
+function saveStateToCache(state: CachedState) {
+  if (!isBrowser) return;
+  try {
+    sessionStorage.setItem(SHOPIFY_CACHE_KEY, JSON.stringify(state));
+  } catch (e) {
+    // Silent fail
+  }
+}
+
+// Load state from sessionStorage
+function loadStateFromCache(): CachedState | null {
+  if (!isBrowser) return null;
+  try {
+    const cached = sessionStorage.getItem(SHOPIFY_CACHE_KEY);
+    if (cached) {
+      const state = JSON.parse(cached) as CachedState;
+      // Cache valid for 30 minutes
+      if (Date.now() - state.timestamp < 30 * 60 * 1000) {
+        return state;
+      }
+    }
+  } catch (e) {
+    // Silent fail
+  }
+  return null;
+}
+
 export default function ShopifyPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [userId, setUserId] = useState<string>('');
+  const initializedRef = useRef(false);
   
   // Upload state
   const [uploading, setUploading] = useState(false);
@@ -50,21 +92,45 @@ export default function ShopifyPage() {
   const [paymentGateways, setPaymentGateways] = useState<string[]>([]);
   const [salesChannels, setSalesChannels] = useState<string[]>([]);
   
-  // Filters
-  const [filters, setFilters] = useState<ShopifyFilters>({
-    date_from: '',
-    date_to: '',
-    payment_gateway: 'all',
-    order_sales_channel: 'all',
-    search: ''
+  // Filters - initialize from cache or defaults
+  const [filters, setFilters] = useState<ShopifyFilters>(() => {
+    const cached = loadStateFromCache();
+    if (cached) {
+      return cached.filters;
+    }
+    return {
+      date_from: '',
+      date_to: '',
+      payment_gateway: 'all',
+      order_sales_channel: 'all',
+      search: ''
+    };
   });
   
-  // Pagination
-  const [currentPage, setCurrentPage] = useState(1);
-  const [pageSize, setPageSize] = useState(50);
+  // Pagination - initialize from cache or defaults
+  const [currentPage, setCurrentPage] = useState(() => {
+    const cached = loadStateFromCache();
+    return cached?.currentPage || 1;
+  });
+  const [pageSize, setPageSize] = useState(() => {
+    const cached = loadStateFromCache();
+    return cached?.pageSize || 50;
+  });
   
   // Calculate total pages
   const totalPages = Math.max(1, Math.ceil(totalRecords / pageSize));
+
+  // Save state to cache whenever filters or pagination change
+  useEffect(() => {
+    if (filters.date_from && filters.date_to) {
+      saveStateToCache({
+        filters,
+        currentPage,
+        pageSize,
+        timestamp: Date.now()
+      });
+    }
+  }, [filters, currentPage, pageSize]);
 
   // Format date for display (DD/MM/YYYY)
   const formatDateDisplay = (dateStr: string): string => {
@@ -118,16 +184,24 @@ export default function ShopifyPage() {
       }
       setUserId(session.user.id);
       
-      // Set default date range (current month)
-      const now = new Date();
-      const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
-      const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-      
-      setFilters(prev => ({
-        ...prev,
-        date_from: firstDay.toISOString().split('T')[0],
-        date_to: lastDay.toISOString().split('T')[0]
-      }));
+      // Only set default date range if no cached filters exist
+      if (!initializedRef.current) {
+        initializedRef.current = true;
+        
+        const cached = loadStateFromCache();
+        if (!cached || !cached.filters.date_from || !cached.filters.date_to) {
+          // Set default date range (current month)
+          const now = new Date();
+          const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
+          const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+          
+          setFilters(prev => ({
+            ...prev,
+            date_from: firstDay.toISOString().split('T')[0],
+            date_to: lastDay.toISOString().split('T')[0]
+          }));
+        }
+      }
     };
     
     checkAuth();
