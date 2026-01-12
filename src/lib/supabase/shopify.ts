@@ -197,28 +197,18 @@ export async function getShopifySalesGrouped(
 }
 
 /**
- * Get unique payment gateways from database
+ * Get unique payment gateways from database using RPC function
  */
 export async function getPaymentGatewaysFromDB(): Promise<string[]> {
   try {
-    const { data, error } = await supabase
-      .from('shopify_sales')
-      .select('payment_gateway')
-      .order('payment_gateway');
+    const { data, error } = await supabase.rpc('get_shopify_payment_gateways');
     
     if (error) {
       console.error('❌ [SHOPIFY] Get gateways error:', error);
       return [];
     }
     
-    const unique = new Set<string>();
-    data?.forEach(row => {
-      if (row.payment_gateway) {
-        unique.add(row.payment_gateway);
-      }
-    });
-    
-    return Array.from(unique).sort();
+    return (data || []).map((row: { payment_gateway: string }) => row.payment_gateway);
   } catch (err) {
     console.error('❌ [SHOPIFY] Exception:', err);
     return [];
@@ -226,28 +216,18 @@ export async function getPaymentGatewaysFromDB(): Promise<string[]> {
 }
 
 /**
- * Get unique order sales channels from database
+ * Get unique order sales channels from database using RPC function
  */
 export async function getOrderSalesChannelsFromDB(): Promise<string[]> {
   try {
-    const { data, error } = await supabase
-      .from('shopify_sales')
-      .select('order_sales_channel')
-      .order('order_sales_channel');
+    const { data, error } = await supabase.rpc('get_shopify_sales_channels');
     
     if (error) {
       console.error('❌ [SHOPIFY] Get channels error:', error);
       return [];
     }
     
-    const unique = new Set<string>();
-    data?.forEach(row => {
-      if (row.order_sales_channel) {
-        unique.add(row.order_sales_channel);
-      }
-    });
-    
-    return Array.from(unique).sort();
+    return (data || []).map((row: { order_sales_channel: string }) => row.order_sales_channel);
   } catch (err) {
     console.error('❌ [SHOPIFY] Exception:', err);
     return [];
@@ -277,7 +257,7 @@ export async function deleteAllShopifySales(): Promise<{ success: boolean; delet
 }
 
 /**
- * Get Shopify sales statistics
+ * Get Shopify sales statistics using RPC function for accurate aggregation
  */
 export async function getShopifySalesStats(filters: ShopifyFilters): Promise<{
   totalRecords: number;
@@ -286,48 +266,26 @@ export async function getShopifySalesStats(filters: ShopifyFilters): Promise<{
   totalNet: number;
 }> {
   try {
-    let query = supabase
-      .from('shopify_sales')
-      .select('gross_payments, refunded_payments, net_payments');
-    
-    // Apply filters
-    if (filters.date_from) {
-      query = query.gte('day', filters.date_from);
-    }
-    if (filters.date_to) {
-      query = query.lte('day', filters.date_to);
-    }
-    if (filters.payment_gateway && filters.payment_gateway !== 'all') {
-      query = query.eq('payment_gateway', filters.payment_gateway);
-    }
-    if (filters.order_sales_channel && filters.order_sales_channel !== 'all') {
-      query = query.eq('order_sales_channel', filters.order_sales_channel);
-    }
-    if (filters.search) {
-      query = query.ilike('order_name', `%${filters.search}%`);
-    }
-    
-    const { data, error } = await query;
+    const { data, error } = await supabase.rpc('get_shopify_stats', {
+      p_date_from: filters.date_from || null,
+      p_date_to: filters.date_to || null,
+      p_payment_gateway: filters.payment_gateway === 'all' ? null : filters.payment_gateway,
+      p_order_sales_channel: filters.order_sales_channel === 'all' ? null : filters.order_sales_channel,
+      p_search: filters.search || null
+    });
     
     if (error) {
       console.error('❌ [SHOPIFY] Stats error:', error);
       return { totalRecords: 0, totalGross: 0, totalRefunded: 0, totalNet: 0 };
     }
     
-    const stats = {
-      totalRecords: data?.length || 0,
-      totalGross: 0,
-      totalRefunded: 0,
-      totalNet: 0
+    const row = data?.[0];
+    return {
+      totalRecords: Number(row?.total_records) || 0,
+      totalGross: Number(row?.total_gross) || 0,
+      totalRefunded: Number(row?.total_refunded) || 0,
+      totalNet: Number(row?.total_net) || 0
     };
-    
-    data?.forEach(row => {
-      stats.totalGross += row.gross_payments || 0;
-      stats.totalRefunded += row.refunded_payments || 0;
-      stats.totalNet += row.net_payments || 0;
-    });
-    
-    return stats;
   } catch (err) {
     console.error('❌ [SHOPIFY] Exception:', err);
     return { totalRecords: 0, totalGross: 0, totalRefunded: 0, totalNet: 0 };
