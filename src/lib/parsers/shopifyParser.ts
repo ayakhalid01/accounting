@@ -21,27 +21,39 @@ export function convertShopifyDate(dateStr: string): string {
 /**
  * Parse date string to Date object (handles multiple formats)
  */
-export function parseShopifyDate(dateStr: string): Date | null {
-  if (!dateStr) return null;
+export function parseShopifyDate(dateStr: string | number): Date | null {
+  if (dateStr === null || dateStr === undefined || dateStr === '') return null;
+  
+  // Handle Excel serial date numbers
+  if (typeof dateStr === 'number') {
+    // Excel serial date: days since 1900-01-01 (with a bug for 1900 leap year)
+    const excelEpoch = new Date(1899, 11, 30); // Dec 30, 1899
+    const date = new Date(excelEpoch.getTime() + dateStr * 24 * 60 * 60 * 1000);
+    if (!isNaN(date.getTime())) {
+      return date;
+    }
+  }
   
   const str = String(dateStr).trim();
+  if (!str) return null;
   
   // Handle YYYY-MM-DD format (ISO format, already correct for DB)
-  if (str.match(/^\d{4}-\d{2}-\d{2}$/)) {
+  if (str.match(/^\d{4}-\d{1,2}-\d{1,2}$/)) {
     const [year, month, day] = str.split('-').map(p => parseInt(p, 10));
     return new Date(year, month - 1, day);
   }
   
-  // Handle MM/DD/YYYY format (US format from Shopify)
+  // Handle M/D/YYYY or MM/DD/YYYY format (US format from Shopify)
   if (str.includes('/')) {
     const parts = str.split('/');
     if (parts.length === 3) {
       const [month, day, year] = parts.map(p => parseInt(p, 10));
-      return new Date(year, month - 1, day);
+      if (!isNaN(month) && !isNaN(day) && !isNaN(year)) {
+        return new Date(year, month - 1, day);
+      }
     }
   }
   
-  // Handle DD-MM-YYYY or DD/MM/YYYY (if day > 12, assume DD/MM/YYYY)
   // Try parsing as Date object
   const parsed = new Date(str);
   if (!isNaN(parsed.getTime())) {
@@ -54,17 +66,18 @@ export function parseShopifyDate(dateStr: string): Date | null {
 /**
  * Format Date to YYYY-MM-DD for database
  */
-export function formatDateForDB(dateStr: string): string {
-  if (!dateStr) return '';
-  
-  const str = String(dateStr).trim();
+export function formatDateForDB(dateStr: string | number): string {
+  if (dateStr === null || dateStr === undefined || dateStr === '') return '';
   
   // If already in YYYY-MM-DD format, return as-is
-  if (str.match(/^\d{4}-\d{2}-\d{2}$/)) {
-    return str;
+  if (typeof dateStr === 'string') {
+    const str = dateStr.trim();
+    if (str.match(/^\d{4}-\d{2}-\d{2}$/)) {
+      return str;
+    }
   }
   
-  const date = parseShopifyDate(str);
+  const date = parseShopifyDate(dateStr);
   if (!date || isNaN(date.getTime())) return '';
   
   const year = date.getFullYear();
@@ -130,10 +143,12 @@ export async function parseShopifyFile(file: File, headerRowIndex: number = 0): 
   const headers = jsonData[headerRowIndex].map(h => String(h).trim());
   console.log(`🏷️ [SHOPIFY_PARSER] Headers found:`, headers);
   
-  // Map headers to standard column names
+  // Map headers to standard column names (support multiple variations)
   const columnMapping: Record<string, string> = {
     'Transaction ID': 'transaction_id',
     'Day': 'day',
+    'Month': 'day',  // Some exports use "Month" instead of "Day"
+    'Date': 'day',   // Some exports use "Date"
     'Order name': 'order_name',
     'Payment gateway': 'payment_gateway',
     'POS location name': 'pos_location_name',
@@ -178,9 +193,12 @@ export async function parseShopifyFile(file: File, headerRowIndex: number = 0): 
     // Skip rows without essential data
     if (!orderName || !paymentGateway) continue;
     
+    // Convert date - handle both string and number formats
+    const dayFormatted = formatDateForDB(dayValue);
+    
     const importRow: ShopifyImportRow = {
       transaction_id: row[columnIndices['transaction_id']] ? String(row[columnIndices['transaction_id']]) : undefined,
-      day: String(dayValue || ''),
+      day: dayFormatted || String(dayValue || ''),
       order_name: String(orderName),
       payment_gateway: String(paymentGateway).trim(),
       pos_location_name: row[columnIndices['pos_location_name']] ? String(row[columnIndices['pos_location_name']]) : undefined,
