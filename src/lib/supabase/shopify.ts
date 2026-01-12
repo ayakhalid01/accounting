@@ -239,17 +239,36 @@ export async function getOrderSalesChannelsFromDB(): Promise<string[]> {
  */
 export async function deleteAllShopifySales(): Promise<{ success: boolean; deleted: number; error?: string }> {
   try {
+    // First try using RPC function
     const { data, error } = await supabase.rpc('delete_all_shopify_sales');
     
-    if (error) {
-      console.error('❌ [SHOPIFY] Delete all error:', error);
-      return { success: false, deleted: 0, error: error.message };
+    if (!error) {
+      const deleted = data?.[0]?.deleted_count || 0;
+      console.log(`✅ [SHOPIFY] Deleted ${deleted} rows via RPC`);
+      return { success: true, deleted };
     }
     
-    const deleted = data?.[0]?.deleted_count || 0;
-    console.log(`✅ [SHOPIFY] Deleted ${deleted} rows`);
+    console.warn('⚠️ [SHOPIFY] RPC failed, trying direct delete:', error.message);
     
-    return { success: true, deleted };
+    // Fallback: Delete with WHERE clause (required by Supabase)
+    // First get count
+    const { count: totalCount } = await supabase
+      .from('shopify_sales')
+      .select('*', { count: 'exact', head: true });
+    
+    // Delete all records using id IS NOT NULL (always true)
+    const { error: deleteError } = await supabase
+      .from('shopify_sales')
+      .delete()
+      .not('id', 'is', null);
+    
+    if (deleteError) {
+      console.error('❌ [SHOPIFY] Delete all error:', deleteError);
+      return { success: false, deleted: 0, error: deleteError.message };
+    }
+    
+    console.log(`✅ [SHOPIFY] Deleted ${totalCount || 0} rows via direct delete`);
+    return { success: true, deleted: totalCount || 0 };
   } catch (err: any) {
     console.error('❌ [SHOPIFY] Exception:', err);
     return { success: false, deleted: 0, error: err.message };
