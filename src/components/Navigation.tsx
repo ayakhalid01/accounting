@@ -12,7 +12,8 @@ import {
   Settings, 
   LogOut,
   Users,
-  Wallet
+  Wallet,
+  ShoppingBag
 } from 'lucide-react';
 
 export default function Navigation() {
@@ -45,6 +46,7 @@ export default function Navigation() {
     { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, adminOnly: false },
     { href: '/uploads', label: 'Accounting Uploads', icon: Upload, adminOnly: false },
     { href: '/invoices', label: 'Invoices', icon: FileText, adminOnly: false },
+    { href: '/shopify', label: 'Shopify Sales', icon: ShoppingBag, adminOnly: false },
     { href: '/deposits', label: 'Deposits', icon: Wallet, adminOnly: false },
     { href: '/admin', label: 'Admin', icon: Users, adminOnly: true },
   ].filter(item => !item.adminOnly || isAdmin);

@@ -334,3 +334,54 @@ export interface DepositFileData {
   rows: Record<string, any>[];
   rowCount: number;
 }
+
+// Shopify Sales Types
+export interface ShopifySale {
+  id: string;
+  transaction_id?: string;
+  day: string; // Date in DD/MM/YYYY format
+  order_name: string;
+  payment_gateway: string;
+  pos_location_name?: string;
+  order_sales_channel?: string;
+  pos_register_id?: string;
+  gross_payments: number;
+  refunded_payments: number;
+  net_payments: number;
+  imported_by?: string;
+  imported_at?: string;
+  created_at?: string;
+}
+
+export interface ShopifySaleGrouped {
+  day: string;
+  order_name: string;
+  payment_gateway: string;
+  pos_location_name?: string;
+  order_sales_channel?: string;
+  total_gross: number;
+  total_refunded: number;
+  total_net: number;
+  transaction_count: number;
+}
+
+export interface ShopifyFilters {
+  date_from?: string;
+  date_to?: string;
+  payment_gateway?: string;
+  order_sales_channel?: string;
+  search?: string;
+}
+
+export interface ShopifyImportRow {
+  transaction_id?: string;
+  day: string;
+  order_name: string;
+  payment_gateway: string;
+  pos_location_name?: string;
+  order_sales_channel?: string;
+  pos_register_id?: string;
+  gross_payments: number;
+  refunded_payments: number;
+  net_payments: number;
+}
